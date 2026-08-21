@@ -1,0 +1,12 @@
+{
+  "name": "ai-router",
+  "private": true,
+  "workspaces": [
+    "packages/*"
+  ],
+  "scripts": {
+    "test": "bun test",
+    "typecheck": "tsc -p packages/core/tsconfig.json --noEmit",
+    "conformance": "bun run packages/core/conformance/run.ts"
+  }
+}

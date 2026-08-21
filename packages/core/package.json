@@ -1,0 +1,29 @@
+{
+  "name": "@ai-router/core",
+  "version": "0.1.0",
+  "description": "Provider-agnostic AI routing core: fallback chains, key pools, rate limiting, unified streaming. Zero runtime dependencies.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "bun test",
+    "build": "tsc -p tsconfig.json",
+    "conformance": "bun run conformance/run.ts"
+  },
+  "devDependencies": {
+    "@types/bun": "^1.1.0",
+    "typescript": "^5.5.0"
+  }
+}

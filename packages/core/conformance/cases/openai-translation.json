@@ -1,0 +1,132 @@
+{
+  "cases": [
+    {
+      "name": "basic chat completion",
+      "kind": "openai_request",
+      "providerModel": "gpt-4o-mini",
+      "stream": false,
+      "request": {
+        "model": "fast",
+        "messages": [{ "role": "user", "content": "hi" }]
+      },
+      "expected": {
+        "model": "gpt-4o-mini",
+        "messages": [{ "role": "user", "content": "hi" }]
+      }
+    },
+    {
+      "name": "full optional params map through; unset ones stay absent",
+      "kind": "openai_request",
+      "providerModel": "gpt-4o",
+      "stream": false,
+      "request": {
+        "model": "smart",
+        "messages": [
+          { "role": "system", "content": "be terse" },
+          { "role": "user", "content": "hi" }
+        ],
+        "temperature": 0.5,
+        "top_p": 0.9,
+        "max_tokens": 256,
+        "stop": ["END"],
+        "response_format": { "type": "json_object" },
+        "user": "u_123"
+      },
+      "expected": {
+        "model": "gpt-4o",
+        "messages": [
+          { "role": "system", "content": "be terse" },
+          { "role": "user", "content": "hi" }
+        ],
+        "temperature": 0.5,
+        "top_p": 0.9,
+        "max_tokens": 256,
+        "stop": ["END"],
+        "response_format": { "type": "json_object" },
+        "user": "u_123"
+      }
+    },
+    {
+      "name": "tools and tool_choice pass through",
+      "kind": "openai_request",
+      "providerModel": "gpt-4o-mini",
+      "stream": false,
+      "request": {
+        "model": "fast",
+        "messages": [{ "role": "user", "content": "weather?" }],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get weather",
+              "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      },
+      "expected": {
+        "model": "gpt-4o-mini",
+        "messages": [{ "role": "user", "content": "weather?" }],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get weather",
+              "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+            }
+          }
+        ],
+        "tool_choice": "auto"
+      }
+    },
+    {
+      "name": "stream mode sets stream + include_usage",
+      "kind": "openai_request",
+      "providerModel": "gpt-4o-mini",
+      "stream": true,
+      "request": {
+        "model": "fast",
+        "messages": [{ "role": "user", "content": "hi" }]
+      },
+      "expected": {
+        "model": "gpt-4o-mini",
+        "messages": [{ "role": "user", "content": "hi" }],
+        "stream": true,
+        "stream_options": { "include_usage": true }
+      }
+    },
+    {
+      "name": "multimodal content arrays pass through natively",
+      "kind": "openai_request",
+      "providerModel": "gpt-4o-mini",
+      "stream": false,
+      "request": {
+        "model": "fast",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is this?" },
+              { "type": "image_url", "image_url": { "url": "https://ex.com/cat.jpg", "detail": "low" } }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "model": "gpt-4o-mini",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is this?" },
+              { "type": "image_url", "image_url": { "url": "https://ex.com/cat.jpg", "detail": "low" } }
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

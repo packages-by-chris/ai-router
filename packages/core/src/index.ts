@@ -1,0 +1,57 @@
+// Public surface of @ai-router/core.
+
+export { AIRouter, type AIRouterOptions } from "./router.js";
+export { RoutingEngine, estimateTokens } from "./engine.js";
+export type { AttemptEvent, AttemptOutcome, CallOptions, EngineOptions } from "./engine.js";
+export { parseConfig } from "./config/parse.js";
+export type { LimitRule, ModelRoute, ProviderId, RouterConfig } from "./config/schema.js";
+export { PROVIDER_IDS } from "./config/schema.js";
+export {
+  AIRouterError,
+  AllRoutesFailedError,
+  ConfigError,
+  ProviderError,
+  RateLimitedError,
+  UnsupportedProviderError,
+  classifyStatus,
+  isKeyRelatedKind,
+  isRetryableKind,
+} from "./errors.js";
+export type { AttemptRecord, ErrorKind, ProviderErrorOptions } from "./errors.js";
+export { MemoryStore } from "./limiter/memory.js";
+export type { RateLimitDecision, RateLimitStore } from "./limiter/store.js";
+export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
+export {
+  AnthropicAdapter,
+  ANTHROPIC_DEFAULT_BASE_URL,
+  ANTHROPIC_DEFAULT_MAX_TOKENS,
+  ANTHROPIC_VERSION,
+  mapFinishReason as mapAnthropicFinishReason,
+  translateRequest as translateAnthropicRequest,
+  translateResponse as translateAnthropicResponse,
+} from "./providers/anthropic.js";
+export {
+  GeminiAdapter,
+  GEMINI_DEFAULT_BASE_URL,
+  mapFinishReason as mapGeminiFinishReason,
+  translateRequest as translateGeminiRequest,
+  translateResponse as translateGeminiResponse,
+} from "./providers/gemini.js";
+export { getAdapter, isSupported } from "./providers/registry.js";
+export type { AdapterContext, NormalizedRoute, ProviderAdapter, RawRequestOptions } from "./providers/types.js";
+export { parseRetryAfter, fetchWithTimeout, toNetworkError } from "./http/request.js";
+export type { FetchLike } from "./http/request.js";
+export { sseData, streamFromChunks } from "./http/sse.js";
+export type {
+  ChatChunk,
+  ChatMessage,
+  ChatRequest,
+  ChatResponse,
+  Choice,
+  Delta,
+  Role,
+  Tool,
+  ToolCall,
+  ToolCallDelta,
+  Usage,
+} from "./types.js";

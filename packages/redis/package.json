@@ -1,0 +1,30 @@
+{
+  "name": "@ai-router/redis",
+  "version": "0.1.0",
+  "description": "Redis-backed RateLimitStore for @ai-router/core — shared rate-limit state across replicas. No hard dependencies: bring your own ioredis/node-redis client.",
+  "type": "module",
+  "main": "./dist/index.js",
+  "types": "./dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "test": "bun test",
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@ai-router/core": "workspace:*"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0"
+  }
+}

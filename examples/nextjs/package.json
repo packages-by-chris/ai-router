@@ -1,0 +1,25 @@
+{
+  "name": "@ai-router/example-nextjs",
+  "private": true,
+  "scripts": {
+    "dev": "next dev --webpack",
+    "build": "next build --webpack",
+    "start": "next start"
+  },
+  "dependencies": {
+    "@ai-router/core": "workspace:*",
+    "next": "16.3.2",
+    "react": "19.2.8",
+    "react-dom": "19.2.8"
+  },
+  "devDependencies": {
+    "@types/react": "19.2.18",
+    "eslint": "^9.39.5",
+    "eslint-config-next": "16.3.2"
+  },
+  "pnpm": {
+    "overrides": {
+      "@types/react": "19.2.18"
+    }
+  }
+}

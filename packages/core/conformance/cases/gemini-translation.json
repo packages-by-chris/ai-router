@@ -1,0 +1,178 @@
+{
+  "cases": [
+    {
+      "name": "gemini: systemInstruction + role mapping",
+      "kind": "gemini_request",
+      "providerModel": "gemini-2.0-flash",
+      "stream": false,
+      "request": {
+        "model": "flash",
+        "messages": [
+          { "role": "system", "content": "be terse" },
+          { "role": "user", "content": "hi" }
+        ]
+      },
+      "expected": {
+        "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }],
+        "systemInstruction": { "parts": [{ "text": "be terse" }] }
+      }
+    },
+    {
+      "name": "gemini: generationConfig mapping incl json mode",
+      "kind": "gemini_request",
+      "providerModel": "gemini-2.0-flash",
+      "stream": false,
+      "request": {
+        "model": "flash",
+        "messages": [{ "role": "user", "content": "hi" }],
+        "temperature": 0.5,
+        "max_tokens": 256,
+        "response_format": { "type": "json_object" }
+      },
+      "expected": {
+        "contents": [{ "role": "user", "parts": [{ "text": "hi" }] }],
+        "generationConfig": {
+          "temperature": 0.5,
+          "maxOutputTokens": 256,
+          "responseMimeType": "application/json"
+        }
+      }
+    },
+    {
+      "name": "gemini: tools + forced function via allowedFunctionNames",
+      "kind": "gemini_request",
+      "providerModel": "gemini-2.0-flash",
+      "stream": false,
+      "request": {
+        "model": "flash",
+        "messages": [{ "role": "user", "content": "weather?" }],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get weather",
+              "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+            }
+          }
+        ],
+        "tool_choice": { "type": "function", "function": { "name": "get_weather" } }
+      },
+      "expected": {
+        "contents": [{ "role": "user", "parts": [{ "text": "weather?" }] }],
+        "tools": [
+          {
+            "functionDeclarations": [
+              {
+                "name": "get_weather",
+                "description": "Get weather",
+                "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+              }
+            ]
+          }
+        ],
+        "toolConfig": { "functionCallingConfig": { "mode": "ANY", "allowedFunctionNames": ["get_weather"] } }
+      }
+    },
+    {
+      "name": "gemini: tool loop (functionCall out, functionResponse back with resolved name)",
+      "kind": "gemini_request",
+      "providerModel": "gemini-2.0-flash",
+      "stream": false,
+      "request": {
+        "model": "flash",
+        "messages": [
+          { "role": "user", "content": "weather in Paris?" },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              { "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }
+            ]
+          },
+          { "role": "tool", "tool_call_id": "call_1", "content": "22C" }
+        ]
+      },
+      "expected": {
+        "contents": [
+          { "role": "user", "parts": [{ "text": "weather in Paris?" }] },
+          { "role": "model", "parts": [{ "functionCall": { "name": "get_weather", "args": { "city": "Paris" }, "id": "call_1" } }] },
+          { "role": "user", "parts": [{ "functionResponse": { "name": "get_weather", "id": "call_1", "response": { "result": "22C" } } }] }
+        ]
+      }
+    },
+    {
+      "name": "gemini: multimodal parts -> inlineData/fileData",
+      "kind": "gemini_request",
+      "providerModel": "gemini-2.0-flash",
+      "stream": false,
+      "request": {
+        "model": "flash",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is this?" },
+              { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } },
+              { "type": "image_url", "image_url": { "url": "https://ex.com/cat.jpg" } }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "contents": [
+          {
+            "role": "user",
+            "parts": [
+              { "text": "what is this?" },
+              { "inlineData": { "mimeType": "image/png", "data": "AAAA" } },
+              { "fileData": { "mimeType": "image/jpeg", "fileUri": "https://ex.com/cat.jpg" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "gemini: response with functionCall part -> unified tool_calls",
+      "kind": "gemini_response",
+      "providerModel": "gemini-2.0-flash",
+      "response": {
+        "responseId": "resp_1",
+        "modelVersion": "gemini-2.0-flash",
+        "candidates": [
+          {
+            "content": {
+              "role": "model",
+              "parts": [
+                { "text": "Checking." },
+                { "functionCall": { "id": "fc_1", "name": "get_weather", "args": { "city": "Paris" } } }
+              ]
+            },
+            "finishReason": "STOP"
+          }
+        ],
+        "usageMetadata": { "promptTokenCount": 10, "candidatesTokenCount": 5, "totalTokenCount": 15 }
+      },
+      "expected": {
+        "id": "resp_1",
+        "model": "gemini-2.0-flash",
+        "provider": "gemini",
+        "created": 0,
+        "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": {
+              "role": "assistant",
+              "content": "Checking.",
+              "tool_calls": [
+                { "id": "fc_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

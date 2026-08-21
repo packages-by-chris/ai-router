@@ -1,0 +1,156 @@
+{
+  "cases": [
+    {
+      "name": "anthropic: system extraction + max_tokens default",
+      "kind": "anthropic_request",
+      "providerModel": "claude-sonnet-4-6",
+      "stream": false,
+      "request": {
+        "model": "smart",
+        "messages": [
+          { "role": "system", "content": "be terse" },
+          { "role": "user", "content": "hi" }
+        ]
+      },
+      "expected": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 4096,
+        "system": "be terse",
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": "hi" }] }]
+      }
+    },
+    {
+      "name": "anthropic: tools map to input_schema, tool_choice required -> any",
+      "kind": "anthropic_request",
+      "providerModel": "claude-sonnet-4-6",
+      "stream": false,
+      "request": {
+        "model": "smart",
+        "messages": [{ "role": "user", "content": "weather?" }],
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "Get weather",
+              "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+            }
+          }
+        ],
+        "tool_choice": "required"
+      },
+      "expected": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 4096,
+        "messages": [{ "role": "user", "content": [{ "type": "text", "text": "weather?" }] }],
+        "tools": [
+          {
+            "name": "get_weather",
+            "description": "Get weather",
+            "input_schema": { "type": "object", "properties": { "city": { "type": "string" } } }
+          }
+        ],
+        "tool_choice": { "type": "any" }
+      }
+    },
+    {
+      "name": "anthropic: tool loop history (tool_calls + tool result)",
+      "kind": "anthropic_request",
+      "providerModel": "claude-sonnet-4-6",
+      "stream": false,
+      "request": {
+        "model": "smart",
+        "messages": [
+          { "role": "user", "content": "weather in Paris?" },
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              { "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }
+            ]
+          },
+          { "role": "tool", "tool_call_id": "call_1", "content": "22C" }
+        ]
+      },
+      "expected": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 4096,
+        "messages": [
+          { "role": "user", "content": [{ "type": "text", "text": "weather in Paris?" }] },
+          { "role": "assistant", "content": [{ "type": "tool_use", "id": "call_1", "name": "get_weather", "input": { "city": "Paris" } }] },
+          { "role": "user", "content": [{ "type": "tool_result", "tool_use_id": "call_1", "content": "22C" }] }
+        ]
+      }
+    },
+    {
+      "name": "anthropic: multimodal parts -> image blocks",
+      "kind": "anthropic_request",
+      "providerModel": "claude-sonnet-4-6",
+      "stream": false,
+      "request": {
+        "model": "smart",
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is this?" },
+              { "type": "image_url", "image_url": { "url": "data:image/png;base64,AAAA" } },
+              { "type": "image_url", "image_url": { "url": "https://ex.com/cat.jpg" } }
+            ]
+          }
+        ]
+      },
+      "expected": {
+        "model": "claude-sonnet-4-6",
+        "max_tokens": 4096,
+        "messages": [
+          {
+            "role": "user",
+            "content": [
+              { "type": "text", "text": "what is this?" },
+              { "type": "image", "source": { "type": "base64", "media_type": "image/png", "data": "AAAA" } },
+              { "type": "image", "source": { "type": "url", "url": "https://ex.com/cat.jpg" } }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "anthropic: response with tool_use block -> unified tool_calls",
+      "kind": "anthropic_response",
+      "providerModel": "claude-sonnet-4-6",
+      "response": {
+        "id": "msg_1",
+        "type": "message",
+        "role": "assistant",
+        "model": "claude-sonnet-4-6",
+        "stop_reason": "tool_use",
+        "content": [
+          { "type": "text", "text": "Checking." },
+          { "type": "tool_use", "id": "toolu_1", "name": "get_weather", "input": { "city": "Paris" } }
+        ],
+        "usage": { "input_tokens": 10, "output_tokens": 5 }
+      },
+      "expected": {
+        "id": "msg_1",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "created": 0,
+        "usage": { "prompt_tokens": 10, "completion_tokens": 5, "total_tokens": 15 },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "tool_calls",
+            "message": {
+              "role": "assistant",
+              "content": "Checking.",
+              "tool_calls": [
+                { "id": "toolu_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }
+              ]
+            }
+          }
+        ]
+      }
+    }
+  ]
+}

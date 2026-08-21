@@ -1,0 +1,97 @@
+import { ProviderError, classifyStatus } from "../errors.js";
+
+export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
+
+export interface FetchOptions {
+  timeoutMs: number;
+  signal?: AbortSignal;
+}
+
+/**
+ * fetch with a per-attempt timeout and optional outer cancellation.
+ * Network failures propagate as thrown errors; adapters wrap them into
+ * ProviderError(kind: "network" | "timeout").
+ */
+export async function fetchWithTimeout(
+  fetchImpl: FetchLike,
+  url: string,
+  init: RequestInit,
+  opts: FetchOptions,
+): Promise<Response> {
+  const controller = new AbortController();
+  let timedOut = false;
+  const timer = setTimeout(() => {
+    timedOut = true;
+    controller.abort(new DOMException("request timed out", "TimeoutError"));
+  }, opts.timeoutMs);
+
+  const onOuterAbort = () => controller.abort(opts.signal?.reason);
+  if (opts.signal) {
+    if (opts.signal.aborted) {
+      clearTimeout(timer);
+      throw new DOMException("aborted", "AbortError");
+    }
+    opts.signal.addEventListener("abort", onOuterAbort, { once: true });
+  }
+
+  try {
+    return await fetchImpl(url, { ...init, signal: controller.signal });
+  } finally {
+    clearTimeout(timer);
+    if (opts.signal) opts.signal.removeEventListener("abort", onOuterAbort);
+  }
+}
+
+/** Wrap a low-level failure into a retryable ProviderError. */
+export function toNetworkError(provider: string, err: unknown): ProviderError {
+  if (err instanceof ProviderError) return err;
+  const isTimeout =
+    err instanceof DOMException &&
+    (err.name === "TimeoutError" || err.name === "AbortError") === true &&
+    err.name === "TimeoutError";
+  return new ProviderError(provider, isTimeout ? "timeout" : "network", errorMessage(err), {
+    cause: err,
+  });
+}
+
+/** Read Retry-After (seconds or HTTP-date) as milliseconds. */
+export function parseRetryAfter(headers: Headers): number | undefined {
+  const raw = headers.get("retry-after");
+  if (raw === null || raw.length === 0) return undefined;
+  const seconds = Number(raw);
+  if (Number.isFinite(seconds)) return Math.max(0, Math.round(seconds * 1000));
+  const date = Date.parse(raw);
+  if (!Number.isNaN(date)) return Math.max(0, date - Date.now());
+  return undefined;
+}
+
+export function errorMessage(err: unknown): string {
+  if (err instanceof Error) return err.message;
+  return String(err);
+}
+
+/**
+ * Shared non-2xx handling. OpenAI and Anthropic error bodies both carry
+ * { error: { message } }, so one implementation serves every adapter.
+ */
+export async function requireOk(resp: Response, provider: string): Promise<void> {
+  if (resp.ok) return;
+  const kind = classifyStatus(resp.status);
+  let body: unknown;
+  let message = `${provider}: HTTP ${resp.status}`;
+  const text = await resp.text().catch(() => undefined);
+  if (text !== undefined) {
+    try {
+      body = JSON.parse(text) as unknown;
+      const errMsg = (body as { error?: { message?: string } }).error?.message;
+      if (errMsg) message = `${provider}: ${errMsg}`;
+    } catch {
+      // non-JSON error body; keep the generic message
+    }
+  }
+  throw new ProviderError(provider, kind, message, {
+    status: resp.status,
+    retryAfterMs: parseRetryAfter(resp.headers),
+    body,
+  });
+}
