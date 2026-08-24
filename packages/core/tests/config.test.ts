@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { parseConfig } from "../src/config/parse.js";
 import { ConfigError } from "../src/errors.js";
 

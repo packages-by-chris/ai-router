@@ -1,7 +1,7 @@
 /**
  * Live smoke test against real provider APIs. Run manually with keys:
  *
- *   OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... bun run scripts/smoke.ts
+ *   OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... npx tsx scripts/smoke.ts
  *
  * Per provider with a key present: one tiny non-streaming completion and one
  * tiny streaming request through the full unified pipeline (translation,

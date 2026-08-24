@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { sseData, streamFromChunks } from "../src/http/sse.js";
 
 async function collect(parts: string[]): Promise<string[]> {

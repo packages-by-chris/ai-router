@@ -18,4 +18,4 @@ pass the **same** JSON fixtures against its own implementation.
    editing the case unilaterally. Change the fixture in a dedicated commit
    and port it to the other SDK in the same PR.
 2. New behavior = new fixture, in the same commit as the behavior.
-3. Run: `bun run conformance` (TS) — the Python runner reads the same files.
+3. Run: `npm run conformance` (TS) — the Python runner reads the same files.

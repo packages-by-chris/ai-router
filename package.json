@@ -2,11 +2,25 @@
   "name": "ai-router",
   "private": true,
   "workspaces": [
-    "packages/*"
+    "packages/*",
+    "apps/*"
   ],
+  "packageManager": "npm@10.9.8",
   "scripts": {
-    "test": "bun test",
-    "typecheck": "tsc -p packages/core/tsconfig.json --noEmit",
-    "conformance": "bun run packages/core/conformance/run.ts"
+    "build": "turbo run build",
+    "test": "turbo run test",
+    "typecheck": "turbo run typecheck",
+    "conformance": "turbo run conformance",
+    "dev": "turbo run dev",
+    "smoke": "tsx scripts/smoke.ts"
+  },
+  "devDependencies": {
+    "tsx": "^4.19.0",
+    "turbo": "^2.5.0",
+    "typescript": "^5.5.0",
+    "vitest": "^3.2.0"
+  },
+  "overrides": {
+    "@types/react": "19.2.18"
   }
 }

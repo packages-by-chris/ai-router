@@ -18,12 +18,12 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "bun test",
+    "test": "vitest run",
     "build": "tsc -p tsconfig.json",
-    "conformance": "bun run conformance/run.ts"
+    "typecheck": "tsc -p tsconfig.json --noEmit",
+    "conformance": "tsx conformance/run.ts"
   },
   "devDependencies": {
-    "@types/bun": "^1.1.0",
     "typescript": "^5.5.0"
   }
 }

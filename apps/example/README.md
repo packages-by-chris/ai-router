@@ -9,13 +9,9 @@ happens, alongside the streamed answer.
 
 ```bash
 # from the repo root — installs workspace deps
-pnpm install
+npm install
 
-# optional: pre-seed the chain from env instead of the config panel
-cp examples/nextjs/.env.example examples/nextjs/.env.local
-
-cd examples/nextjs
-pnpm dev
+npm run dev --workspace @ai-router/example  # or: npm run dev -w @ai-router/docs for the docs site
 # http://localhost:3000
 ```
 
@@ -33,7 +29,7 @@ pnpm dev
   key, which try.
 - **Singleton router** (`lib/router.ts`) — `globalThis` cache so hot reloads
   don't reset key-pool cursors and rate-limit windows (Prisma-client pattern).
-  Cold start falls back to env keys if no config was posted yet.
+  Starts empty; add routes via the config panel.
 - **Streaming commit boundary** — all attempt events precede the first
   delta (the engine commits before streaming); post-commit errors surface
   inline since a provider swap mid-stream is impossible.

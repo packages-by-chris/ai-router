@@ -228,13 +228,16 @@ export class RoutingEngine {
     req: ChatRequest,
     notify: Notify,
   ): Promise<{ ok: true; value: ChatResponse } | { ok: false; attempt: AttemptRecord }> {
-    const maxTries = route.maxRetries + 1;
+    const maxRetries = route.maxRetries;
+    const poolSize = route.keyPool.length;
     let keyIndex = this.nextKeyIndex(route);
     let tries = 0;
+    let retries = 0;
+    let keysExhausted = 0;
     let last: ProviderError | undefined;
 
-    while (tries < maxTries) {
-      const key = route.keyPool[keyIndex % route.keyPool.length] as string;
+    for (;;) {
+      const key = route.keyPool[keyIndex % poolSize] as string;
       tries++;
       try {
         const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl });
@@ -245,16 +248,31 @@ export class RoutingEngine {
         return { ok: true, value };
       } catch (err) {
         last = toProviderError(err, route.provider);
-        const failedKeyIndex = keyIndex;
-        if (isKeyRelatedKind(last.kind)) keyIndex++;
-        if (!isRetryableKind(last.kind)) break;
-        if (tries < maxTries) {
+        // Rate limit / auth / permission: try the next key immediately.
+        // If all keys exhausted (or only one key), fall back to next route.
+        if (isKeyRelatedKind(last.kind)) {
+          keysExhausted++;
+          if (keysExhausted >= poolSize) break;
+          const prevKeyIndex = keyIndex;
+          keyIndex++;
           notify({
             routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex: failedKeyIndex,
+            outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
             kind: last.kind, message: last.message,
           });
-          await this.sleep(this.backoffMs(tries, last.retryAfterMs));
+          continue;
+        }
+        if (!isRetryableKind(last.kind)) break;
+        if (retries < maxRetries) {
+          retries++;
+          notify({
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "retry", attempts: tries, keyIndex,
+            kind: last.kind, message: last.message,
+          });
+          await this.sleep(this.backoffMs(retries, last.retryAfterMs));
+        } else {
+          break;
         }
       }
     }
@@ -270,19 +288,20 @@ export class RoutingEngine {
     req: ChatRequest,
     notify: Notify,
   ): Promise<{ ok: true; value: AsyncIterable<ChatChunk> } | { ok: false; attempt: AttemptRecord }> {
-    const maxTries = route.maxRetries + 1;
+    const maxRetries = route.maxRetries;
+    const poolSize = route.keyPool.length;
     let keyIndex = this.nextKeyIndex(route);
     let tries = 0;
+    let retries = 0;
+    let keysExhausted = 0;
     let last: ProviderError | undefined;
 
-    while (tries < maxTries) {
-      const key = route.keyPool[keyIndex % route.keyPool.length] as string;
+    for (;;) {
+      const key = route.keyPool[keyIndex % poolSize] as string;
       tries++;
       try {
         const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl });
         const iterator = iterable[Symbol.asyncIterator]();
-        // Commit boundary: awaiting the first chunk. Everything before this
-        // line is fallback-eligible; everything after is the caller's problem.
         const first = await iterator.next();
         if (first.done) {
           notify({
@@ -298,16 +317,29 @@ export class RoutingEngine {
         return { ok: true, value: this.continueStream(route, first.value, iterator) };
       } catch (err) {
         last = toProviderError(err, route.provider);
-        const failedKeyIndex = keyIndex;
-        if (isKeyRelatedKind(last.kind)) keyIndex++;
-        if (!isRetryableKind(last.kind)) break;
-        if (tries < maxTries) {
+        if (isKeyRelatedKind(last.kind)) {
+          keysExhausted++;
+          if (keysExhausted >= poolSize) break;
+          const prevKeyIndex = keyIndex;
+          keyIndex++;
           notify({
             routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex: failedKeyIndex,
+            outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
             kind: last.kind, message: last.message,
           });
-          await this.sleep(this.backoffMs(tries, last.retryAfterMs));
+          continue;
+        }
+        if (!isRetryableKind(last.kind)) break;
+        if (retries < maxRetries) {
+          retries++;
+          notify({
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "retry", attempts: tries, keyIndex,
+            kind: last.kind, message: last.message,
+          });
+          await this.sleep(this.backoffMs(retries, last.retryAfterMs));
+        } else {
+          break;
         }
       }
     }

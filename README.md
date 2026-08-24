@@ -58,7 +58,7 @@ packages/core/
     providers/    ProviderAdapter interface, OpenAI adapter, registry
     engine.ts     fallback / retry / key-rotation / stream-commit engine
     router.ts     AIRouter facade
-  tests/          bun:test suites (46 tests)
+  tests/          vitest suites (46 tests)
   conformance/    JSON fixtures + runner — the cross-SDK drift guard
 ```
 
@@ -89,14 +89,16 @@ for await (const chunk of stream) process.stdout.write(chunk.delta.content ?? ""
 ## Commands
 
 ```bash
-bun install
-bun test
-bun run conformance
-bun run typecheck   # requires dev deps (tsc) — run after install
+npm install
+npm test            # turbo run test — every package with tests
+npm run conformance
+npm run typecheck   # all packages, not just core
+npm run build       # core + redis dist, nextjs example
 ```
 
-> Note: tests run on Bun's native TS runner today; vitest can be swapped in
-> later without changing test structure.
+Task graph lives in [`turbo.json`](turbo.json); builds are cached and
+topologically ordered (`@ai-router/core` builds before dependents). Tests skip
+the cache — they read env vars.
 
 ## Roadmap
 
@@ -110,10 +112,18 @@ bun run typecheck   # requires dev deps (tsc) — run after install
 
 ## Example app
 
-[`examples/nextjs`](examples/nextjs/README.md) — Next.js chat UI streaming
-through the router with an env-driven fallback chain (first provider key set
-= primary, rest = fallbacks). Shows the singleton-router pattern for
-frameworks with hot reload.
+[`apps/example`](apps/example/README.md) — Next.js chat UI
+streaming through the router with an env-driven fallback chain (first
+provider key set = primary, rest = fallbacks). Shows the singleton-router
+pattern for frameworks with hot reload.
+
+### Docs site
+
+[`apps/docs`](apps/docs) — Next.js documentation site: sidebar navigation,
+syntax-highlighted pages covering the full API, and a landing page, styled
+with the same console theme as [`apps/example`](apps/example/README.md).
+Content lives in `apps/docs/content/*.md`. `npm run dev` starts both apps;
+docs alone: `npm run dev -w @ai-router/docs`.
 
 ## Live smoke test
 
@@ -121,7 +131,7 @@ Mocks prove plumbing; real APIs prove wire format. Before trusting a release:
 
 ```bash
 OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... \
-  bun run scripts/smoke.ts
+  npx tsx scripts/smoke.ts
 ```
 
 One tiny completion + one tiny stream per provider with a key set (haiku /

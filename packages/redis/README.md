@@ -58,10 +58,10 @@ atomic across replicas. Keys expire via `PEXPIRE`; no TTL bookkeeping needed.
 ## Testing note
 
 Unit tests run against a JS fake with identical semantics (no server
-needed): `bun test`. The Lua scripts themselves need real Redis — wire this
+needed): `npm test`. The Lua scripts themselves need real Redis — wire this
 into CI before trusting the package in production:
 
 ```bash
 docker run -d -p 6379:6379 redis:7
-bun run packages/redis/integration/run.ts   # TODO when CI exists
+npx tsx packages/redis/integration/run.ts   # TODO when CI exists
 ```

@@ -19,59 +19,30 @@ interface RouterState {
 
 const g = globalThis as typeof globalThis & { __aiRouterState?: RouterState };
 
-function envRoutes(): ModelRoute[] {
-  const routes: ModelRoute[] = [];
-  if (process.env.OPENAI_API_KEY) {
-    routes.push({
-      id: "openai",
-      provider: "openai",
-      model: "gpt-4o-mini",
-      apiKey: process.env.OPENAI_API_KEY,
-      maxRetries: 1,
-      limit: { rpm: 30 },
-    });
-  }
-  if (process.env.ANTHROPIC_API_KEY) {
-    routes.push({
-      id: "anthropic",
-      provider: "anthropic",
-      model: "claude-haiku-4-5",
-      apiKey: process.env.ANTHROPIC_API_KEY,
-      maxRetries: 1,
-    });
-  }
-  if (process.env.GEMINI_API_KEY) {
-    routes.push({
-      id: "gemini",
-      provider: "gemini",
-      model: "gemini-2.0-flash",
-      apiKey: process.env.GEMINI_API_KEY,
-      maxRetries: 1,
-    });
-  }
-  return routes;
-}
-
 function ensure(): RouterState {
   if (!g.__aiRouterState) {
-    const routes = envRoutes();
-    if (routes.length === 0) {
-      throw new Error(
-        "No routes configured. Add routes in the config panel or set OPENAI_API_KEY / ANTHROPIC_API_KEY / GEMINI_API_KEY in .env.local",
-      );
-    }
-    g.__aiRouterState = { router: new AIRouter({ routes }), routes };
-    console.log(`[ai-router] env chain: ${routes.map((r) => r.provider).join(" -> ")}`);
+    g.__aiRouterState = {
+      router: new AIRouter({ routes: [] }),
+      routes: [],
+    };
   }
   return g.__aiRouterState;
 }
 
 export function getRouter(): AIRouter {
-  return ensure().router;
+  const state = ensure();
+  if (state.routes.length === 0) {
+    throw new Error("No routes configured. Add routes in the config panel.");
+  }
+  return state.router;
 }
 
 export function getPrimary(): string {
-  return ensure().routes[0]!.id;
+  const state = ensure();
+  if (state.routes.length === 0) {
+    throw new Error("No routes configured. Add routes in the config panel.");
+  }
+  return state.routes[0]!.id;
 }
 
 /** Current chain (with keys) — used by the chain tester to probe each route. */

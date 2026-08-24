@@ -18,11 +18,12 @@
     "node": ">=18"
   },
   "scripts": {
-    "test": "bun test",
-    "build": "tsc -p tsconfig.json"
+    "test": "vitest run",
+    "build": "tsc -p tsconfig.json",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
   },
   "dependencies": {
-    "@ai-router/core": "workspace:*"
+    "@ai-router/core": "*"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

@@ -1,0 +1,16 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "docs",
+      "runtimeExecutable": "npm",
+      "runtimeArgs": ["run", "dev", "-w", "@ai-router/docs"],
+      "port": 3000,
+      "autoPort": true
+    },
+    {
+      "name": "docs-running",
+      "url": "http://localhost:3003"
+    }
+  ]
+}

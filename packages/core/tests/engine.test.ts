@@ -1,4 +1,4 @@
-import { describe, expect, test } from "bun:test";
+import { describe, expect, test } from "vitest";
 import { AllRoutesFailedError, ConfigError, ProviderError, RateLimitedError } from "../src/errors.js";
 import type { AttemptEvent } from "../src/engine.js";
 import { MemoryStore } from "../src/limiter/memory.js";
@@ -164,19 +164,19 @@ describe("RoutingEngine.complete", () => {
     expect(res.model).toBe("b-model");
   });
 
-  test("emits attempt events: retry, error, skip, ok", async () => {
+  test("emits attempt events: skip, error, key-rotate, ok", async () => {
     const store = new MemoryStore({ now: () => 0 });
     await store.take("a:rpm", 1, 60_000, 1); // exhaust a's rpm -> skip
     const mock = new MockFetch(
       jsonResponse(500, { error: { message: "b down" } }), // b try 1
-      jsonResponse(429, { error: { message: "b busy" } }, { "retry-after": "0" }), // b try 2 (retryable, but maxRetries=0)
-      jsonResponse(200, completionJson({ model: "g-model" })),
+      jsonResponse(429, { error: { message: "g key0 rate limited" } }), // g key0
+      jsonResponse(200, completionJson({ model: "g-model" })), // g key1
     );
     const engine = new RoutingEngine(
       config([
         { limit: { rpm: 1 } },
         {},
-        { id: "g", provider: "openai-compatible", baseUrl: "https://g.example/v1", model: "g-model", apiKey: "kg" },
+        { id: "g", provider: "openai-compatible", baseUrl: "https://g.example/v1", model: "g-model", apiKey: "kg", apiKeys: ["kg2"] },
       ]),
       { fetchImpl: mock.fetch, sleep: noopSleep, store },
     );
@@ -188,7 +188,7 @@ describe("RoutingEngine.complete", () => {
     expect(events).toEqual([
       expect.objectContaining({ routeId: "a", outcome: "skipped_rate_limit" }),
       expect.objectContaining({ routeId: "b", outcome: "error", attempts: 1, kind: "server" }),
-      // g: 429 on key 0 -> rotate -> success on key 1
+      // g: 429 on key0 -> rotate -> success on key1
       expect.objectContaining({ routeId: "g", outcome: "retry", attempts: 1, kind: "rate_limit", keyIndex: 0 }),
       expect.objectContaining({ routeId: "g", outcome: "ok", attempts: 2, keyIndex: 1 }),
     ]);

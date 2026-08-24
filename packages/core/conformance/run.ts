@@ -9,7 +9,7 @@
  *   - anthropic_request: unified request      -> Anthropic body
  *   - anthropic_response: Anthropic message   -> unified response
  *
- * Run: bun run conformance/run.ts
+ * Run: npm run conformance (or: npx tsx conformance/run.ts)
  */
 
 import { readdirSync, readFileSync } from "node:fs";

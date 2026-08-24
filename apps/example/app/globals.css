@@ -1,21 +1,25 @@
 /* ── tokens ─────────────────────────────────────────────────────────── */
 
 :root {
-  --bg0: #0c1017; /* page / chat well */
-  --bg1: #111722; /* sidebar */
-  --bg2: #161e2b; /* panels, cards */
-  --bg3: #1b2433; /* raised: user chip, inputs */
-  --line: #232d3f; /* rails, hairlines */
-  --line-soft: #1a2230;
-  --ink: #dee6f2;
-  --ink-dim: #8b97ab;
-  --ink-faint: #5a6678;
-  --amber: #f2b84b; /* live signal */
-  --amber-dim: rgba(242, 184, 75, 0.14);
-  --ok: #74c69d;
-  --fail: #e5715f;
-  --skip: #b78feb;
-  --grid: rgba(120, 145, 190, 0.05);
+  --bg0: #fbfbf9; /* page / chat well */
+  --bg1: #f4f3ef; /* sidebar */
+  --bg2: #ffffff; /* panels, cards */
+  --bg3: #eceae4; /* raised: user chip, inputs */
+  --line: #e4e2dc; /* rails, hairlines */
+  --line-soft: #eceae4;
+  --ink: #16181d; /* 16:1 on paper */
+  --ink-dim: #4a4f58;
+  --ink-faint: #8a8f98;
+  --amber: #0c7a52; /* primary action (signal green) */
+  --amber-dim: rgba(14, 143, 99, 0.1);
+  --ok: #0e8f63;
+  --fail: #d64545;
+  --skip: #7c5cd6;
+  --grid: rgba(22, 24, 29, 0.035);
+  /* console pane (code blocks) */
+  --code-bg: #101418;
+  --code-line: #232a33;
+  --code-ink: #d5dae1;
 }
 
 /* ── base ───────────────────────────────────────────────────────────── */
@@ -29,11 +33,11 @@ body {
   background: var(--bg0);
   color: var(--ink);
   font-family:
-    var(--font-display),
+    var(--font-body),
     ui-sans-serif,
     system-ui,
     sans-serif;
-  font-size: 14px;
+  font-size: 14.5px;
   -webkit-font-smoothing: antialiased;
 }
 
@@ -80,6 +84,7 @@ textarea {
 }
 
 .wordmark {
+  font-family: var(--font-display), sans-serif;
   font-size: 19px;
   font-weight: 600;
   letter-spacing: -0.01em;
@@ -115,7 +120,7 @@ textarea {
   justify-content: space-between;
   padding: 20px 28px 14px;
   border-bottom: 1px solid var(--line-soft);
-  background: rgba(12, 16, 23, 0.7);
+  background: rgba(255, 255, 255, 0.72);
   backdrop-filter: blur(4px);
 }
 
@@ -188,7 +193,7 @@ textarea {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--bg1);
+  background: var(--bg2);
   border: 2px solid var(--ink-faint);
 }
 
@@ -310,7 +315,7 @@ textarea {
 
 .button {
   background: var(--amber);
-  color: #14100a;
+  color: #ffffff;
   border: 0;
   border-radius: 8px;
   padding: 7px 15px;
@@ -370,7 +375,7 @@ textarea {
 
 select.cell {
   appearance: none;
-  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238b97ab' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
+  background-image: url("data:image/svg+xml;charset=utf-8,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='6'%3E%3Cpath d='M1 1l4 4 4-4' stroke='%238a8f98' fill='none' stroke-width='1.5'/%3E%3C/svg%3E");
   background-repeat: no-repeat;
   background-position: right 9px center;
   padding-right: 26px;
@@ -424,6 +429,93 @@ select.cell option {
   font-size: 14px;
 }
 
+.msg.assistant {
+  background: var(--bg2);
+  border: 1px solid var(--line-soft);
+  border-top-left-radius: 4px;
+}
+
+.msg.assistant p {
+  margin: 0 0 10px;
+}
+
+.msg.assistant p:last-child {
+  margin-bottom: 0;
+}
+
+.msg.assistant ul,
+.msg.assistant ol {
+  margin: 8px 0;
+  padding-left: 22px;
+}
+
+.msg.assistant li {
+  margin: 4px 0;
+}
+
+.msg.assistant blockquote {
+  margin: 8px 0;
+  padding: 2px 12px;
+  border-left: 3px solid var(--line);
+  color: var(--ink-dim);
+}
+
+.msg.assistant h1,
+.msg.assistant h2,
+.msg.assistant h3,
+.msg.assistant h4 {
+  margin: 14px 0 6px;
+  font-weight: 600;
+  line-height: 1.3;
+}
+
+.msg.assistant h1 { font-size: 1.25em; }
+.msg.assistant h2 { font-size: 1.15em; }
+.msg.assistant h3 { font-size: 1.05em; }
+
+.msg.assistant hr {
+  border: none;
+  border-top: 1px solid var(--line);
+  margin: 12px 0;
+}
+
+.msg.assistant strong {
+  font-weight: 600;
+  color: var(--ink);
+}
+
+.msg.assistant em {
+  font-style: italic;
+}
+
+.msg.assistant a {
+  color: var(--amber);
+  text-decoration: none;
+}
+
+.msg.assistant a:hover {
+  text-decoration: underline;
+}
+
+.msg.assistant table {
+  border-collapse: collapse;
+  margin: 8px 0;
+  font-size: 13px;
+  width: 100%;
+}
+
+.msg.assistant th,
+.msg.assistant td {
+  border: 1px solid var(--line);
+  padding: 6px 10px;
+  text-align: left;
+}
+
+.msg.assistant th {
+  background: var(--bg3);
+  font-weight: 600;
+}
+
 .msg.user {
   background: var(--bg3);
   border: 1px solid var(--line);
@@ -437,9 +529,9 @@ select.cell option {
 }
 
 .msg.error {
-  background: rgba(229, 113, 95, 0.08);
-  border: 1px solid rgba(229, 113, 95, 0.35);
-  color: #f0b3aa;
+  background: rgba(214, 69, 69, 0.06);
+  border: 1px solid rgba(214, 69, 69, 0.35);
+  color: #a83232;
   align-self: stretch;
   max-width: none;
 }
@@ -452,24 +544,27 @@ select.cell option {
 }
 
 .codeblock {
-  background: var(--bg0);
-  border: 1px solid var(--line-soft);
+  background: var(--code-bg);
+  border: 1px solid var(--code-line);
+  color: var(--code-ink);
   border-radius: 8px;
-  padding: 10px 12px;
+  padding: 12px 14px;
   overflow-x: auto;
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 12.5px;
-  line-height: 1.55;
-  margin: 8px 0;
+  line-height: 1.6;
+  margin: 10px 0;
+  white-space: pre;
 }
 
 .inline-code {
-  background: var(--bg0);
-  border: 1px solid var(--line-soft);
+  background: #f1f0ec;
+  border: 1px solid var(--line);
   border-radius: 4px;
-  padding: 1px 5px;
+  padding: 2px 6px;
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 0.88em;
+  color: #c7254e;
 }
 
 .caret::after {
@@ -493,6 +588,7 @@ select.cell option {
   display: flex;
   flex-direction: column;
   gap: 4px;
+  overflow-x: auto;
 }
 
 .timeline::before {
@@ -514,6 +610,7 @@ select.cell option {
   font-family: var(--font-mono), ui-monospace, monospace;
   font-size: 11px;
   color: var(--ink-dim);
+  white-space: nowrap;
 }
 
 .evt::before {
@@ -524,7 +621,7 @@ select.cell option {
   width: 6px;
   height: 6px;
   border-radius: 50%;
-  background: var(--bg1);
+  background: var(--bg2);
   border: 2px solid var(--ink-faint);
 }
 
@@ -533,7 +630,7 @@ select.cell option {
 }
 
 .evt-retry::before {
-  border-color: var(--amber);
+  border-color: #b9770e;
 }
 
 .evt-error::before {
@@ -545,7 +642,8 @@ select.cell option {
 }
 
 .evt-outcome {
-  min-width: 132px;
+  min-width: 150px;
+  flex-shrink: 0;
 }
 
 .evt-ok .evt-outcome {
@@ -553,7 +651,7 @@ select.cell option {
 }
 
 .evt-retry .evt-outcome {
-  color: var(--amber);
+  color: #b9770e;
 }
 
 .evt-error .evt-outcome {

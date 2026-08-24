@@ -71,7 +71,7 @@ const emptyDraft = (): RouteDraft => ({
   rpm: "",
 });
 
-/** Markdown-lite: fenced code blocks, `inline code`, **bold**, *italic*. */
+/** Markdown-lite: fenced code blocks, `inline code`, **bold**, *italic*, # headings, - lists. */
 function renderInline(text: string, keyPrefix: string): ReactNode {
   const parts = text.split(/(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`)/g);
   return parts.map((part, i) => {
@@ -95,22 +95,83 @@ function renderInline(text: string, keyPrefix: string): ReactNode {
 
 function Formatted({ text, streaming }: { text: string; streaming: boolean }) {
   const blocks = text.split(/```/);
+  const elements: ReactNode[] = [];
+  let key = 0;
+
+  for (let i = 0; i < blocks.length; i++) {
+    if (i % 2 === 1) {
+      elements.push(
+        <pre key={key++} className="codeblock">
+          <code>{blocks[i]!.replace(/^\w*\n/, "")}</code>
+        </pre>,
+      );
+    } else {
+      const lines = blocks[i]!.split("\n");
+      let listItems: ReactNode[] = [];
+
+      const flushList = () => {
+        if (listItems.length > 0) {
+          elements.push(<ul key={key++}>{listItems}</ul>);
+          listItems = [];
+        }
+      };
+
+      for (const line of lines) {
+        const trimmed = line.trim();
+        // Headings
+        const headingMatch = trimmed.match(/^(#{1,4})\s+(.*)/);
+        if (headingMatch) {
+          flushList();
+          const level = headingMatch[1]!.length;
+          const heading = renderInline(headingMatch[2]!, `${key}`);
+          if (level === 1) elements.push(<h1 key={key++}>{heading}</h1>);
+          else if (level === 2) elements.push(<h2 key={key++}>{heading}</h2>);
+          else if (level === 3) elements.push(<h3 key={key++}>{heading}</h3>);
+          else elements.push(<h4 key={key++}>{heading}</h4>);
+          continue;
+        }
+        // Unordered list items
+        const listMatch = trimmed.match(/^[-*]\s+(.*)/);
+        if (listMatch) {
+          listItems.push(
+            <li key={key++}>{renderInline(listMatch[1]!, `${key}`)}</li>,
+          );
+          continue;
+        }
+        // Ordered list items
+        const olMatch = trimmed.match(/^\d+\.\s+(.*)/);
+        if (olMatch) {
+          listItems.push(
+            <li key={key++}>{renderInline(olMatch[1]!, `${key}`)}</li>,
+          );
+          continue;
+        }
+        // Horizontal rule
+        if (/^[-*_]{3,}\s*$/.test(trimmed)) {
+          flushList();
+          elements.push(<hr key={key++} />);
+          continue;
+        }
+        // Empty line = paragraph break
+        if (trimmed === "") {
+          flushList();
+          continue;
+        }
+        // Regular paragraph line
+        flushList();
+        elements.push(
+          <p key={key++}>
+            {renderInline(trimmed, `${key}`)}
+          </p>,
+        );
+      }
+      flushList();
+    }
+  }
+
   return (
     <>
-      {blocks.map((block, i) =>
-        i % 2 === 1 ? (
-          <pre key={i} className="codeblock">
-            <code>{block.replace(/^\w*\n/, "")}</code>
-          </pre>
-        ) : (
-          block.split("\n").map((line, j) => (
-            <span key={`${i}-${j}`}>
-              {renderInline(line, `${i}-${j}`)}
-              <br />
-            </span>
-          ))
-        ),
-      )}
+      {elements}
       {streaming && <span className="caret" />}
     </>
   );
@@ -216,6 +277,57 @@ export default function Page() {
   async function removeRoute(id: string) {
     const res = await fetch(`/api/config?id=${encodeURIComponent(id)}`, {
       method: "DELETE",
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: res.statusText }));
+      setConfigMsg({ ok: false, text: data.error });
+      return;
+    }
+    void refreshChain();
+  }
+
+  async function moveRoute(fromIndex: number, toIndex: number) {
+    if (toIndex < 0 || toIndex >= routes.length) return;
+    const reordered = [...routes];
+    const [moved] = reordered.splice(fromIndex, 1);
+    reordered.splice(toIndex, 0, moved!);
+
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({ routes: reordered.map(stripToInput) }),
+    });
+    if (!res.ok) {
+      const data = await res.json().catch(() => ({ error: res.statusText }));
+      setConfigMsg({ ok: false, text: data.error });
+      return;
+    }
+    void refreshChain();
+  }
+
+  async function duplicateRoute(route: ServerRoute) {
+    const baseId = route.id.replace(/-\d+$/, "");
+    let newId = `${baseId}-1`;
+    let n = 2;
+    while (routes.some((r) => r.id === newId)) {
+      newId = `${baseId}-${n++}`;
+    }
+
+    const dupe = {
+      id: newId,
+      provider: route.provider,
+      model: route.model,
+      _keepKeyOf: route.id,
+      ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}),
+      ...(route.limit?.rpm ? { limit: { rpm: route.limit.rpm } } : {}),
+    };
+
+    const res = await fetch("/api/config", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        routes: [...routes.map(stripToInput), dupe],
+      }),
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({ error: res.statusText }));
@@ -372,10 +484,36 @@ export default function Page() {
                           <button
                             className="icon"
                             type="button"
+                            title={`Move ${r.id} up`}
+                            disabled={i === 0}
+                            onClick={() => void moveRoute(i, i - 1)}
+                          >
+                            ↑
+                          </button>
+                          <button
+                            className="icon"
+                            type="button"
+                            title={`Move ${r.id} down`}
+                            disabled={i === routes.length - 1}
+                            onClick={() => void moveRoute(i, i + 1)}
+                          >
+                            ↓
+                          </button>
+                          <button
+                            className="icon"
+                            type="button"
                             title={`Edit ${r.id}`}
                             onClick={() => startEdit(r)}
                           >
                             ✎
+                          </button>
+                          <button
+                            className="icon"
+                            type="button"
+                            title={`Duplicate ${r.id}`}
+                            onClick={() => void duplicateRoute(r)}
+                          >
+                            ⧉
                           </button>
                           <button
                             className="icon"
