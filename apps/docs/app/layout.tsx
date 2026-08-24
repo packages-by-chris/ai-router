@@ -1,7 +1,19 @@
+import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
 import { Sora, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import {
+  SITE_DESCRIPTION,
+  SITE_KEYWORDS,
+  SITE_NAME,
+  SITE_TAGLINE,
+  SITE_URL,
+} from "@/lib/site";
 import "./globals.css";
+
+/** Example app ("traffic console") — override with NEXT_PUBLIC_EXAMPLE_URL. */
+const EXAMPLE_URL =
+  process.env.NEXT_PUBLIC_EXAMPLE_URL ?? "http://localhost:3000";
 
 const display = Sora({
   subsets: ["latin"],
@@ -21,13 +33,39 @@ const mono = IBM_Plex_Mono({
   variable: "--font-mono",
 });
 
-export const metadata = {
+export const metadata: Metadata = {
+  metadataBase: new URL(SITE_URL),
   title: {
-    default: "ai-router · docs",
-    template: "%s · ai-router docs",
+    default: `${SITE_NAME} · ${SITE_TAGLINE}`,
+    template: `%s · ${SITE_NAME} docs`,
   },
-  description:
-    "Provider-agnostic AI routing: fallback chains, key pools, rate limiting, unified streaming.",
+  description: SITE_DESCRIPTION,
+  keywords: SITE_KEYWORDS,
+  applicationName: SITE_NAME,
+  creator: SITE_NAME,
+  alternates: { canonical: "/" },
+  openGraph: {
+    type: "website",
+    siteName: SITE_NAME,
+    locale: "en_US",
+    url: SITE_URL,
+    title: `${SITE_NAME} — ${SITE_TAGLINE}`,
+    description: SITE_DESCRIPTION,
+  },
+  twitter: {
+    card: "summary_large_image",
+    title: `${SITE_NAME} — ${SITE_TAGLINE}`,
+    description: SITE_DESCRIPTION,
+  },
+  robots: {
+    index: true,
+    follow: true,
+    googleBot: { index: true, follow: true, "max-image-preview": "large" },
+  },
+};
+
+export const viewport: Viewport = {
+  themeColor: "#ffffff",
 };
 
 export default function RootLayout({ children }: { children: ReactNode }) {
@@ -43,6 +81,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <Link href="/docs/introduction">Docs</Link>
             <Link href="/docs/api-reference">API</Link>
             <Link href="/docs/examples">Examples</Link>
+            <a
+              href={EXAMPLE_URL}
+              className="nav-demo"
+              title="Open the traffic console (npm run dev -w @ai-router/example)"
+            >
+              Live demo ↗
+            </a>
           </nav>
         </header>
         {children}

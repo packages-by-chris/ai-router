@@ -142,8 +142,16 @@ export function getDocSlugs(): string[] {
 }
 
 export async function getDoc(slug: string): Promise<RenderedDoc> {
-  const markdown = readFileSync(join(CONTENT_DIR, `${slug}.md`), "utf8");
-  const { title, description, body } = parseFrontmatter(markdown);
+  const markdown = readFileSync(join(CONTENT_DIR, `${slug}.md`), "utf8")
+    .replace(/^\uFEFF/, "")
+    .replace(/\r\n/g, "\n");
+  const parsed = parseFrontmatter(markdown);
+  // The page shell renders frontmatter title/description as <h1>/<lede>;
+  // drop the markdown's own top-level heading so it isn't duplicated.
+  const { title, description, body } = {
+    ...parsed,
+    body: parsed.body.replace(/^\s*#\s+[^\n]*\n+/, ""),
+  };
 
   let html = marked.parse(body, { async: false });
 
@@ -171,7 +179,7 @@ export async function getDoc(slug: string): Promise<RenderedDoc> {
         .replace(/&quot;/g, '"')
         .replace(/&#39;/g, "'")
         .replace(/\n$/, "");
-      return `<div class="codepane"><div class="codepane-bar"><i></i><i></i><i></i><span class="codepane-lang">${lang}</span></div><pre><code>${highlightCode(
+      return `<div class="codepane"><div class="codepane-bar"><span class="codepane-lang">${lang}</span></div><pre><code>${highlightCode(
         code,
         lang,
       )}</code></pre></div>`;

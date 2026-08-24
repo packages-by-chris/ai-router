@@ -1,27 +1,22 @@
 import type { ReactNode } from "react";
-import { Sora, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
+import { Inter } from "next/font/google";
 import "./globals.css";
 
 // TODO: Cache Components adoption. Refactor this route so this opt-out can be removed.
 // See: https://nextjs.org/docs/app/guides/migrating-to-cache-components
 export const instant = false;
 
-const display = Sora({
+// Inter stands in for Circular (per DESIGN.md); mono is the system stack.
+const display = Inter({
   subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
+  weight: ["500", "600"],
   variable: "--font-display",
 });
 
-const body = IBM_Plex_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-body",
-});
-
-const mono = IBM_Plex_Mono({
+const body = Inter({
   subsets: ["latin"],
   weight: ["400", "500"],
-  variable: "--font-mono",
+  variable: "--font-body",
 });
 
 export const metadata = {
@@ -35,9 +30,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <head>
         <meta name="color-scheme" content="light dark" />
       </head>
-      <body
-        className={`${display.variable} ${body.variable} ${mono.variable}`}
-      >
+      <body className={`${display.variable} ${body.variable}`}>
         {children}
       </body>
     </html>

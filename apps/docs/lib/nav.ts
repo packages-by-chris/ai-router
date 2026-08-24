@@ -63,6 +63,11 @@ export function pageLabel(slug: string): string {
   return PAGE_LABELS[slug] ?? slug;
 }
 
+/** Section title a slug belongs to (for breadcrumb eyebrows). */
+export function sectionOf(slug: string): string | undefined {
+  return NAV.find((s) => s.items.some((i) => i.slug === slug))?.title;
+}
+
 export function neighbors(slug: string): { prev?: NavItem; next?: NavItem } {
   const i = FLAT_NAV.findIndex((item) => item.slug === slug);
   if (i === -1) return {};

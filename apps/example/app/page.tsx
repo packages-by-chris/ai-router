@@ -3,6 +3,13 @@
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
 
+/** Docs site — override with NEXT_PUBLIC_DOCS_URL. */
+const DOCS_URL =
+  process.env.NEXT_PUBLIC_DOCS_URL ??
+  (process.env.NODE_ENV === "production"
+    ? "https://airouter.techyatraa.com"
+    : "http://localhost:3001");
+
 interface AttemptEvent {
   routeId: string;
   provider: string;
@@ -177,6 +184,62 @@ function Formatted({ text, streaming }: { text: string; streaming: boolean }) {
   );
 }
 
+/** Field-level checks with copy a human can act on, not ConfigError paths. */
+function validateDraft(
+  draft: RouteDraft,
+  routes: ServerRoute[],
+  editingId: string | null,
+): Partial<Record<keyof RouteDraft, string>> {
+  const errors: Partial<Record<keyof RouteDraft, string>> = {};
+  const id = draft.id.trim();
+
+  if (!id) {
+    errors.id = "Give this stop a name — something short like “fast” or “backup”.";
+  } else if (!/^[a-zA-Z0-9-]+$/.test(id)) {
+    errors.id = "Stop names can only use letters, numbers, and dashes — no spaces.";
+  } else if (routes.some((r) => r.id === id && id !== editingId)) {
+    errors.id = `You already have a stop named “${id}” — pick a different name.`;
+  }
+
+  if (!draft.model.trim()) {
+    errors.model = "Add the model this stop should call — e.g. gpt-4o-mini.";
+  }
+
+  if (editingId === null && !draft.apiKey.trim()) {
+    errors.apiKey = `Paste an API key for ${draft.provider} — it stays in this server’s memory only.`;
+  }
+
+  const url = draft.baseUrl.trim();
+  if (draft.provider === "openai-compatible" && !url) {
+    errors.baseUrl =
+      "OpenAI-compatible endpoints need a base URL — e.g. https://api.together.xyz/v1";
+  } else if (url && !/^https?:\/\//i.test(url)) {
+    errors.baseUrl = "The base URL should start with http:// or https://.";
+  }
+
+  if (draft.rpm.trim() && !(Number(draft.rpm) >= 1)) {
+    errors.rpm = "The RPM limit needs to be 1 or more.";
+  }
+
+  return errors;
+}
+
+/** Translate core ConfigError strings into plain language, just in case. */
+function friendlyConfigError(raw: string): string {
+  if (/duplicate route id/.test(raw))
+    return "Two stops ended up with the same name — each one needs its own name.";
+  if (/needs "apiKey"|needs \\"apiKey\\"/.test(raw))
+    return "One of your stops is missing an API key.";
+  if (/unknown provider/.test(raw))
+    return "Pick one of the supported providers: openai, anthropic, gemini, or openai-compatible.";
+  if (/environment variable .* is not set/.test(raw))
+    return "A field contains ${…} but that environment variable isn’t set on the server — paste the real value instead.";
+  if (/baseUrl.*required when provider is .openai-compatible./.test(raw))
+    return "OpenAI-compatible endpoints need a base URL — e.g. https://api.together.xyz/v1";
+  if (/must not be empty/.test(raw)) return "Keep at least one stop in the chain.";
+  return raw;
+}
+
 export default function Page() {
   // chain (server state, masked)
   const [routes, setRoutes] = useState<ServerRoute[]>([]);
@@ -185,6 +248,7 @@ export default function Page() {
   // draft form — null = list view
   const [draft, setDraft] = useState<RouteDraft | null>(null);
   const [editingId, setEditingId] = useState<string | null>(null); // null = new route
+  const [draftErrors, setDraftErrors] = useState<Partial<Record<keyof RouteDraft, string>> | null>(null);
 
   // chain tester
   const [testing, setTesting] = useState(false);
@@ -213,12 +277,19 @@ export default function Page() {
 
   function updateDraft(patch: Partial<RouteDraft>) {
     setDraft((prev) => (prev ? { ...prev, ...patch } : prev));
+    setDraftErrors((prev) => {
+      if (!prev) return prev;
+      const next = { ...prev };
+      for (const key of Object.keys(patch)) delete next[key as keyof RouteDraft];
+      return Object.keys(next).length > 0 ? next : null;
+    });
   }
 
   function startAdd() {
     setDraft(emptyDraft());
     setEditingId(null);
     setConfigMsg(null);
+    setDraftErrors(null);
   }
 
   function startEdit(route: ServerRoute) {
@@ -232,17 +303,27 @@ export default function Page() {
     });
     setEditingId(route.id);
     setConfigMsg(null);
+    setDraftErrors(null);
   }
 
   function cancelDraft() {
     setDraft(null);
     setEditingId(null);
     setConfigMsg(null);
+    setDraftErrors(null);
   }
 
   async function saveDraft() {
     if (!draft) return;
     setConfigMsg(null);
+
+    const problems = validateDraft(draft, routes, editingId);
+    if (Object.keys(problems).length > 0) {
+      setDraftErrors(problems);
+      return;
+    }
+    setDraftErrors(null);
+
     const isEdit = editingId !== null;
     const route: Record<string, unknown> = {
       id: draft.id.trim(),
@@ -266,7 +347,10 @@ export default function Page() {
     });
     const data = await res.json();
     if (!res.ok) {
-      setConfigMsg({ ok: false, text: data.error ?? `HTTP ${res.status}` });
+      setConfigMsg({
+        ok: false,
+        text: friendlyConfigError(data.error ?? `HTTP ${res.status}`),
+      });
       return;
     }
     setDraft(null);
@@ -456,6 +540,9 @@ export default function Page() {
         <h1 className="wordmark">
           ai-router <span>/ traffic console</span>
         </h1>
+        <a className="docs-link" href={DOCS_URL}>
+          Read the docs ↗
+        </a>
         <p className="sub">
           One endpoint over every provider. Patch the fallback chain, then send
           traffic — each retry, skip, and hand-off shows up in the timeline.
@@ -568,13 +655,15 @@ export default function Page() {
 
               <div className="route-row" style={{ marginTop: 10 }}>
                 <input
-                  className="cell id"
+                  className={`cell id${draftErrors?.id ? " invalid" : ""}`}
                   placeholder="id"
+                  aria-invalid={draftErrors?.id ? true : undefined}
                   value={draft.id}
                   onChange={(e) => updateDraft({ id: e.target.value })}
                 />
                 <select
                   className="cell"
+                  aria-label="Provider"
                   value={draft.provider}
                   onChange={(e) => updateDraft({ provider: e.target.value })}
                 >
@@ -585,35 +674,53 @@ export default function Page() {
                   ))}
                 </select>
                 <input
-                  className="cell model"
+                  className={`cell model${draftErrors?.model ? " invalid" : ""}`}
                   placeholder="model — e.g. gpt-4o-mini"
+                  aria-label="Model"
+                  aria-invalid={draftErrors?.model ? true : undefined}
                   value={draft.model}
                   onChange={(e) => updateDraft({ model: e.target.value })}
                 />
                 <input
-                  className="cell key"
+                  className={`cell key${draftErrors?.apiKey ? " invalid" : ""}`}
                   placeholder={
                     editingId ? "blank keeps the current key" : "api key"
                   }
+                  aria-label="API key"
+                  aria-invalid={draftErrors?.apiKey ? true : undefined}
                   type="password"
                   value={draft.apiKey}
                   onChange={(e) => updateDraft({ apiKey: e.target.value })}
                 />
                 <input
-                  className="cell url"
+                  className={`cell url${draftErrors?.baseUrl ? " invalid" : ""}`}
                   placeholder="base url — openai-compatible only"
+                  aria-label="Base URL"
+                  aria-invalid={draftErrors?.baseUrl ? true : undefined}
                   value={draft.baseUrl}
                   onChange={(e) => updateDraft({ baseUrl: e.target.value })}
                 />
                 <input
-                  className="cell rpm"
+                  className={`cell rpm${draftErrors?.rpm ? " invalid" : ""}`}
                   placeholder="rpm limit"
+                  aria-label="RPM limit (optional)"
+                  aria-invalid={draftErrors?.rpm ? true : undefined}
                   value={draft.rpm}
                   onChange={(e) =>
                     updateDraft({ rpm: e.target.value.replace(/\D/g, "") })
                   }
                 />
               </div>
+
+              {draftErrors && (
+                <div role="alert">
+                  {Object.values(draftErrors).map((msg) => (
+                    <p key={msg} className="config-err">
+                      {msg}
+                    </p>
+                  ))}
+                </div>
+              )}
 
               <div className="panel-actions">
                 <button className="ghost" type="button" onClick={cancelDraft}>

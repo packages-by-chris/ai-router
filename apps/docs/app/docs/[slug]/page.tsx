@@ -2,7 +2,8 @@ import type { Metadata } from "next";
 import Link from "next/link";
 import { notFound } from "next/navigation";
 import { getDoc, getDocSlugs, type TocEntry } from "@/lib/docs";
-import { neighbors, pageLabel } from "@/lib/nav";
+import { neighbors, pageLabel, sectionOf } from "@/lib/nav";
+import { SITE_NAME, absoluteUrl } from "@/lib/site";
 
 export function generateStaticParams() {
   return getDocSlugs().map((slug) => ({ slug }));
@@ -15,7 +16,24 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { slug } = await params;
   const doc = await getDoc(slug);
-  return { title: doc.title, description: doc.description };
+  const url = `/docs/${slug}`;
+  return {
+    title: doc.title,
+    description: doc.description,
+    alternates: { canonical: url },
+    openGraph: {
+      type: "article",
+      url: absoluteUrl(url),
+      title: `${doc.title} · ${SITE_NAME} docs`,
+      description: doc.description,
+      siteName: SITE_NAME,
+    },
+    twitter: {
+      card: "summary_large_image",
+      title: doc.title,
+      description: doc.description,
+    },
+  };
 }
 
 function TocList({ entries }: { entries: TocEntry[] }) {
@@ -76,10 +94,52 @@ export default async function DocPage({
     notFound();
   }
 
+  const section = sectionOf(slug);
+  const articleLd = {
+    "@context": "https://schema.org",
+    "@graph": [
+      {
+        "@type": "TechArticle",
+        headline: doc.title,
+        description: doc.description,
+        url: absoluteUrl(`/docs/${slug}`),
+        articleSection: section,
+        inLanguage: "en",
+        isPartOf: { "@type": "WebSite", name: `${SITE_NAME} docs` },
+      },
+      {
+        "@type": "BreadcrumbList",
+        itemListElement: [
+          { "@type": "ListItem", position: 1, name: SITE_NAME, item: absoluteUrl("/") },
+          {
+            "@type": "ListItem",
+            position: 2,
+            name: section ?? "Docs",
+            item: absoluteUrl("/docs/introduction"),
+          },
+          {
+            "@type": "ListItem",
+            position: 3,
+            name: doc.title,
+            item: absoluteUrl(`/docs/${slug}`),
+          },
+        ],
+      },
+    ],
+  };
+
   return (
     <>
+      <script
+        type="application/ld+json"
+        dangerouslySetInnerHTML={{ __html: JSON.stringify(articleLd) }}
+      />
       <article className="prose doc-article">
-        <p className="doc-source">{doc.title}</p>
+        <header className="doc-header">
+          {sectionOf(slug) ? <p className="eyebrow">{sectionOf(slug)}</p> : null}
+          <h1 className="doc-title">{doc.title}</h1>
+          {doc.description ? <p className="doc-lede">{doc.description}</p> : null}
+        </header>
         <div dangerouslySetInnerHTML={{ __html: doc.html }} />
         <Pager slug={slug} />
       </article>
