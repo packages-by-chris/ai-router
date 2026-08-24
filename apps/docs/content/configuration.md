@@ -56,6 +56,50 @@ interface LimitRule {
 }
 ```
 
+## Environment variable interpolation
+
+`parseConfig` resolves `${ENV_VAR}` patterns in all string values. This lets
+you load config from JSON files without embedding secrets:
+
+```json
+{
+  "routes": [
+    {
+      "id": "fast",
+      "provider": "openai",
+      "model": "gpt-4o-mini",
+      "apiKey": "${OPENAI_API_KEY}"
+    },
+    {
+      "id": "backup",
+      "provider": "anthropic",
+      "model": "claude-haiku",
+      "apiKey": "${ANTHROPIC_API_KEY}"
+    }
+  ]
+}
+```
+
+By default, variables resolve against `process.env`. Pass an explicit env map
+as the second argument:
+
+```ts
+import { parseConfig } from "@ai-router/core";
+
+const config = parseConfig(jsonInput, {
+  OPENAI_API_KEY: "sk-...",
+  ANTHROPIC_API_KEY: "sk-ant-...",
+});
+```
+
+Missing variables throw `ConfigError` with the variable name and JSON path:
+
+```
+config.routes[0].apiKey: environment variable "OPENAI_API_KEY" is not set
+```
+
+The pattern works in any string field: `apiKey`, `baseUrl`, `headers`, etc.
+
 ## Examples
 
 Single route with a key pool and a budget:

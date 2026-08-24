@@ -62,3 +62,36 @@ for await (const chunk of stream) {
 
 Accumulate `function.arguments` fragments per index until `finish_reason`
 reports `"tool_calls"`.
+
+## Stream utilities
+
+Two helper functions collect stream output without manual iteration:
+
+### `streamText`
+
+Collects all content chunks into a single string:
+
+```ts
+import { streamText } from "@ai-router/core";
+
+const stream = await router.stream({ model: "fast", messages: [...] });
+const text = await streamText(stream);
+console.log(text); // full response as one string
+```
+
+Equivalent to manually concatenating `chunk.delta.content`, but shorter.
+
+### `collectStream`
+
+Collects all chunks into an array. Useful when you need the full chunk history
+(e.g., for tool call accumulation, usage tracking, or debugging):
+
+```ts
+import { collectStream } from "@ai-router/core";
+
+const stream = await router.stream({ model: "fast", messages: [...] });
+const chunks = await collectStream(stream);
+
+const text = chunks.map((c) => c.delta.content ?? "").join("");
+const usage = chunks[chunks.length - 1]?.usage;
+```

@@ -34,16 +34,48 @@ errors aggregate into one `ConfigError`.
 | `fetchImpl?` | global `fetch` | Inject a mock in tests. |
 | `sleep?` | `setTimeout` wrapper | Backoff injection for tests. |
 | `rng?` | `Math.random` | Backoff jitter source. |
+| `middleware?` | — | Per-attempt lifecycle hooks ([Middleware](/docs/middleware)). |
+| `circuitBreaker?` | disabled | Skip route after N failures ([Circuit breaker](/docs/circuit-breaker)). |
 
 ## CallOptions
 
 ```ts
 interface CallOptions {
   onAttempt?: (event: AttemptEvent) => void;
+  signal?: AbortSignal;
 }
 ```
 
-Fires for every routing decision and retry — see [Routing](/docs/routing).
+- `onAttempt` — fires for every routing decision and retry — see [Routing](/docs/routing).
+- `signal` — caller-provided abort signal. Cancels in-flight requests when fired.
+
+## Middleware
+
+```ts
+interface Middleware {
+  beforeRequest?: (ctx: RequestContext) => Promise<void> | void;
+  afterResponse?: (ctx: RequestContext, response: ChatResponse) => Promise<void> | void;
+}
+
+interface RequestContext {
+  routeId: string;
+  provider: string;
+  model: string;       // provider-side model name
+  request: ChatRequest;
+  attempt: number;     // 1-based
+}
+```
+
+Per-attempt lifecycle hooks — see [Middleware](/docs/middleware).
+
+## Circuit breaker
+
+```ts
+// Passed as EngineOptions.circuitBreaker
+{ threshold?: number; cooldownMs?: number }
+```
+
+Skip routes after consecutive failures — see [Circuit breaker](/docs/circuit-breaker).
 
 ## Config types
 
@@ -51,7 +83,7 @@ Fires for every routing decision and retry — see [Routing](/docs/routing).
 - `ModelRoute` — id, provider, model, apiKey/apiKeys, baseUrl, headers, maxRetries, timeoutMs, limit
 - `LimitRule` — `{ rpm?, tpm? }`
 - `PROVIDER_IDS` — `["openai", "openai-compatible", "anthropic", "gemini"]`
-- `parseConfig(input: unknown): RouterConfig` — standalone validation, aggregated errors
+- `parseConfig(input: unknown, env?: Record<string, string | undefined>): RouterConfig` — standalone validation, aggregated errors, `${ENV_VAR}` interpolation
 
 ## Unified request/response types
 
@@ -75,7 +107,12 @@ Shapes are documented page by page under [Core concepts](/docs/configuration).
 
 `RoutingEngine` is exported for advanced use (it is what `AIRouter` wraps),
 along with `estimateTokens`, and the types `AttemptEvent`, `AttemptOutcome`,
-`CallOptions`, `EngineOptions`.
+`CallOptions`, `EngineOptions`, `Middleware`, `RequestContext`.
+
+## Stream utilities
+
+- `streamText(stream)` — collects all content chunks into a `Promise<string>`
+- `collectStream(stream)` — collects all chunks into a `Promise<ChatChunk[]>`
 
 ## Rate limiting
 

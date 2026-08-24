@@ -75,3 +75,39 @@ This hook powers the live routing timeline in [`apps/example`](/docs/examples).
 Fallback is only possible **before** content reaches your caller. `router.stream`
 resolves only once the serving route is committed — see
 [Streaming](/docs/streaming) for the exact contract.
+
+## Cancellation with AbortSignal
+
+Pass a `signal` in `CallOptions` to cancel in-flight requests:
+
+```ts
+const controller = new AbortController();
+
+// Cancel after 5 seconds
+setTimeout(() => controller.abort(), 5000);
+
+const res = await router.complete(
+  { model: "fast", messages },
+  { signal: controller.signal },
+);
+```
+
+When the signal fires:
+- In-flight HTTP requests are aborted immediately.
+- The engine throws a `DOMException` with name `"AbortError"`.
+- If the signal is already aborted before the call starts, the error is thrown synchronously before any HTTP request.
+
+For streams, aborting the signal cancels the upstream connection. The stream
+iterator stops yielding chunks and the error surfaces during iteration.
+
+This integrates with framework request signals — e.g., Next.js `req.signal`:
+
+```ts
+export async function POST(req: Request) {
+  const stream = await router.stream(
+    { model: "fast", messages: [...] },
+    { signal: req.signal }, // client disconnect aborts upstream
+  );
+  // ...
+}
+```
