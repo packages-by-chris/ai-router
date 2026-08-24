@@ -22,7 +22,20 @@ const g = globalThis as typeof globalThis & { __aiRouterState?: RouterState };
 function ensure(): RouterState {
   if (!g.__aiRouterState) {
     g.__aiRouterState = {
-      router: new AIRouter({ routes: [] }),
+      router: new AIRouter(
+        { routes: [] },
+        {
+          circuitBreaker: { threshold: 5, cooldownMs: 30_000 },
+          middleware: {
+            beforeRequest(ctx) {
+              console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
+            },
+            afterResponse(ctx, res) {
+              console.log(`[ai-router] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
+            },
+          },
+        },
+      ),
       routes: [],
     };
   }
@@ -91,7 +104,20 @@ export type SetConfigResult =
 export function setConfig(input: unknown): SetConfigResult {
   try {
     const config = parseConfig(reattachStoredKeys(input));
-    g.__aiRouterState = { router: new AIRouter(config), routes: config.routes };
+    g.__aiRouterState = {
+      router: new AIRouter(config, {
+        circuitBreaker: { threshold: 5, cooldownMs: 30_000 },
+        middleware: {
+          beforeRequest(ctx) {
+            console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
+          },
+          afterResponse(ctx, res) {
+            console.log(`[ai-router] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
+          },
+        },
+      }),
+      routes: config.routes,
+    };
     return { ok: true, routes: config.routes };
   } catch (err) {
     if (err instanceof ConfigError) return { ok: false, error: err.message };

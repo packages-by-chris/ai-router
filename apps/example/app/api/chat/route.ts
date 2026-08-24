@@ -39,6 +39,7 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(obj) + "\n"));
       const started = Date.now();
       try {
+        // Wire client disconnect → abort signal.
         const stream = await router.stream(
           {
             model,
@@ -46,6 +47,7 @@ export async function POST(req: Request) {
             max_tokens: 512,
           },
           {
+            signal: req.signal,
             onAttempt: (event) => send({ type: "event", ...event }),
           },
         );
