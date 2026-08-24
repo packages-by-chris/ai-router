@@ -14,7 +14,10 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
-import { translateRequest as translateOpenAI } from "../src/providers/openai.js";
+import {
+  translateRequest as translateOpenAI,
+  translateResponse as translateOpenAIResponse,
+} from "../src/providers/openai.js";
 import {
   translateRequest as translateAnthropic,
   translateResponse as translateAnthropicResponse,
@@ -27,6 +30,7 @@ import type { ChatRequest } from "../src/types.js";
 
 type CaseKind =
   | "openai_request"
+  | "openai_response"
   | "anthropic_request"
   | "anthropic_response"
   | "gemini_request"
@@ -58,6 +62,8 @@ function actualFor(c: Case): unknown {
   switch (c.kind) {
     case "openai_request":
       return translateOpenAI(c.request!, c.providerModel, c.stream === true);
+    case "openai_response":
+      return translateOpenAIResponse(c.response, c.providerModel);
     case "anthropic_request":
       return translateAnthropic(c.request!, c.providerModel, c.stream === true);
     case "anthropic_response":
@@ -69,7 +75,7 @@ function actualFor(c: Case): unknown {
   }
 }
 
-const casesDir = join(import.meta.dir, "cases");
+const casesDir = join(import.meta.dirname!, "cases");
 let total = 0;
 let failed = 0;
 

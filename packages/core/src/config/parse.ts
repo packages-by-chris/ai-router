@@ -2,12 +2,46 @@
  * Hand-rolled validation (zero runtime deps). Collects ALL violations and
  * reports them with JSON-path style locations so both SDKs can emit
  * identical messages. Keep in lockstep with the Python validator.
+ *
+ * Supports `${ENV_VAR}` interpolation in string values. Resolved against
+ * the provided env map or `process.env` when available.
  */
 
 import { ConfigError } from "../errors.js";
 import { PROVIDER_IDS, type ModelRoute, type RouterConfig } from "./schema.js";
 
 const PROVIDER_SET: ReadonlySet<string> = new Set(PROVIDER_IDS);
+
+const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
+
+/**
+ * Recursively resolve `${VAR}` patterns in string values.
+ * Missing vars throw a clear error.
+ */
+function interpolateEnv(value: unknown, env: Record<string, string | undefined>, path: string): unknown {
+  if (typeof value !== "string") return value;
+  if (!value.includes("${")) return value;
+  return value.replace(ENV_PATTERN, (_, varName: string) => {
+    const resolved = env[varName];
+    if (resolved === undefined) {
+      throw new ConfigError(`${path}: environment variable "${varName}" is not set`);
+    }
+    return resolved;
+  });
+}
+
+function interpolateDeep(obj: unknown, env: Record<string, string | undefined>, path: string): unknown {
+  if (typeof obj === "string") return interpolateEnv(obj, env, path);
+  if (Array.isArray(obj)) return obj.map((item, i) => interpolateDeep(item, env, `${path}[${i}]`));
+  if (obj !== null && typeof obj === "object") {
+    const result: Record<string, unknown> = {};
+    for (const [key, val] of Object.entries(obj as Record<string, unknown>)) {
+      result[key] = interpolateDeep(val, env, `${path}.${key}`);
+    }
+    return result;
+  }
+  return obj;
+}
 
 function isObject(v: unknown): v is Record<string, unknown> {
   return typeof v === "object" && v !== null && !Array.isArray(v);
@@ -17,24 +51,28 @@ function positiveInt(v: unknown): boolean {
   return typeof v === "number" && Number.isInteger(v) && v > 0;
 }
 
-export function parseConfig(input: unknown): RouterConfig {
+export function parseConfig(input: unknown, env?: Record<string, string | undefined>): RouterConfig {
+  // Resolve ${VAR} patterns against env or process.env.
+  const resolvedEnv = env ?? (typeof process !== "undefined" ? process.env : {});
+  const interpolated = interpolateDeep(input, resolvedEnv, "config");
+
   const errors: string[] = [];
 
-  if (!isObject(input)) {
+  if (!isObject(interpolated)) {
     throw new ConfigError("config: expected an object");
   }
 
-  if (!Array.isArray(input.routes)) {
+  if (!Array.isArray(interpolated.routes)) {
     throw new ConfigError("config.routes: expected an array");
   }
-  if (input.routes.length === 0) {
+  if (interpolated.routes.length === 0) {
     throw new ConfigError("config.routes: must not be empty");
   }
 
   const seenIds = new Set<string>();
   const routes: ModelRoute[] = [];
 
-  input.routes.forEach((raw, i) => {
+  interpolated.routes.forEach((raw, i) => {
     const at = `config.routes[${i}]`;
     if (!isObject(raw)) {
       errors.push(`${at}: expected an object`);

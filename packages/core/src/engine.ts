@@ -57,6 +57,27 @@ export interface AttemptEvent {
 export interface CallOptions {
   /** Observability hook: fired for every routing decision and retry. */
   onAttempt?: (event: AttemptEvent) => void;
+  /** Caller-provided abort signal. Cancels in-flight requests when fired. */
+  signal?: AbortSignal;
+}
+
+/** Context passed to middleware before an adapter call. */
+export interface RequestContext {
+  routeId: string;
+  provider: string;
+  /** Provider-side model name (not the route id). */
+  model: string;
+  request: ChatRequest;
+  /** 1-based attempt number for this route. */
+  attempt: number;
+}
+
+/** Optional per-attempt lifecycle hooks. */
+export interface Middleware {
+  /** Called before each adapter request. Throw to abort the attempt. */
+  beforeRequest?: (ctx: RequestContext) => Promise<void> | void;
+  /** Called after a successful adapter response (complete or first stream chunk). */
+  afterResponse?: (ctx: RequestContext, response: ChatResponse) => Promise<void> | void;
 }
 
 type Notify = (event: AttemptEvent) => void;
@@ -71,6 +92,13 @@ export interface EngineOptions {
   sleep?: (ms: number) => Promise<void>;
   /** Backoff jitter source. Tests inject a constant. */
   rng?: () => number;
+  /** Per-attempt lifecycle hooks. */
+  middleware?: Middleware;
+  /**
+   * Circuit breaker. After `threshold` consecutive failures on a route,
+   * skip it for `cooldownMs`. Default: disabled.
+   */
+  circuitBreaker?: { threshold?: number; cooldownMs?: number };
 }
 
 export class RoutingEngine {
@@ -78,6 +106,11 @@ export class RoutingEngine {
   private readonly fetchImpl: FetchLike;
   private readonly sleep: (ms: number) => Promise<void>;
   private readonly rng: () => number;
+  private readonly middleware?: Middleware;
+  private readonly cbThreshold: number;
+  private readonly cbCooldownMs: number;
+  /** Circuit breaker state: consecutive failures per route and when it opens. */
+  private readonly cbState = new Map<string, { failures: number; openUntil: number }>();
   /** Round-robin cursor so successive requests start on different keys. */
   private readonly keyCursor = new Map<string, number>();
 
@@ -86,14 +119,29 @@ export class RoutingEngine {
     this.fetchImpl = opts.fetchImpl ?? fetch;
     this.sleep = opts.sleep ?? ((ms) => new Promise((r) => setTimeout(r, ms)));
     this.rng = opts.rng ?? Math.random;
+    this.middleware = opts.middleware;
+    this.cbThreshold = opts.circuitBreaker?.threshold ?? Infinity;
+    this.cbCooldownMs = opts.circuitBreaker?.cooldownMs ?? 30_000;
   }
 
   async complete(req: ChatRequest, opts: CallOptions = {}): Promise<ChatResponse> {
     const notify = opts.onAttempt ?? noopNotify;
+    const signal = opts.signal;
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     const chain = this.resolveChain(req.model);
     const attempts: AttemptRecord[] = [];
 
     for (const route of chain) {
+      if (this.cbIsOpen(route.id)) {
+        const record: AttemptRecord = {
+          routeId: route.id, provider: route.provider, model: route.model,
+          outcome: "skipped_rate_limit", attempts: 0, message: "circuit breaker open",
+        };
+        attempts.push(record);
+        notify(record);
+        continue;
+      }
+
       let adapter: ProviderAdapter;
       try {
         adapter = getAdapter(route.provider);
@@ -111,14 +159,16 @@ export class RoutingEngine {
         continue;
       }
 
-      const result = await this.attemptRoute(adapter, route, req, notify);
+      const result = await this.attemptRoute(adapter, route, req, notify, signal);
       if (result.ok) {
+        this.cbRecordSuccess(route.id);
         const usage = result.value.usage;
         if (route.limits.tpm !== undefined && usage) {
           await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
         }
         return result.value;
       }
+      this.cbRecordFailure(route.id);
       attempts.push(result.attempt);
     }
 
@@ -132,10 +182,22 @@ export class RoutingEngine {
    */
   async stream(req: ChatRequest, opts: CallOptions = {}): Promise<AsyncIterable<ChatChunk>> {
     const notify = opts.onAttempt ?? noopNotify;
+    const signal = opts.signal;
+    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
     const chain = this.resolveChain(req.model);
     const attempts: AttemptRecord[] = [];
 
     for (const route of chain) {
+      if (this.cbIsOpen(route.id)) {
+        const record: AttemptRecord = {
+          routeId: route.id, provider: route.provider, model: route.model,
+          outcome: "skipped_rate_limit", attempts: 0, message: "circuit breaker open",
+        };
+        attempts.push(record);
+        notify(record);
+        continue;
+      }
+
       let adapter: ProviderAdapter;
       try {
         adapter = getAdapter(route.provider);
@@ -153,8 +215,12 @@ export class RoutingEngine {
         continue;
       }
 
-      const result = await this.attemptStreamRoute(adapter, route, req, notify);
-      if (result.ok) return result.value;
+      const result = await this.attemptStreamRoute(adapter, route, req, notify, signal);
+      if (result.ok) {
+        this.cbRecordSuccess(route.id);
+        return result.value;
+      }
+      this.cbRecordFailure(route.id);
       attempts.push(result.attempt);
     }
 
@@ -190,7 +256,7 @@ export class RoutingEngine {
 
     const keyIndex = this.nextKeyIndex(normalized);
     const key = normalized.keyPool[keyIndex % normalized.keyPool.length] as string;
-    return adapter.raw(normalized, key, opts, { fetchImpl: this.fetchImpl });
+    return adapter.raw(normalized, key, opts, { fetchImpl: this.fetchImpl, signal: opts.signal });
   }
 
   // ------------------------------------------------------------------ internals
@@ -222,11 +288,64 @@ export class RoutingEngine {
     return true;
   }
 
+  private async fireBeforeRequest(route: NormalizedRoute, req: ChatRequest, attempt: number): Promise<void> {
+    if (!this.middleware?.beforeRequest) return;
+    await this.middleware.beforeRequest({
+      routeId: route.id,
+      provider: route.provider,
+      model: route.model,
+      request: req,
+      attempt,
+    });
+  }
+
+  private async fireAfterResponse(route: NormalizedRoute, req: ChatRequest, attempt: number, response: ChatResponse): Promise<void> {
+    if (!this.middleware?.afterResponse) return;
+    await this.middleware.afterResponse({
+      routeId: route.id,
+      provider: route.provider,
+      model: route.model,
+      request: req,
+      attempt,
+    }, response);
+  }
+
+  private cbRecordSuccess(routeId: string): void {
+    this.cbState.delete(routeId);
+  }
+
+  private cbRecordFailure(routeId: string): void {
+    const now = Date.now();
+    const state = this.cbState.get(routeId);
+    if (state && now >= state.openUntil) {
+      // Cooldown expired, reset.
+      state.failures = 1;
+      state.openUntil = 0;
+    } else if (state) {
+      state.failures++;
+    } else {
+      this.cbState.set(routeId, { failures: 1, openUntil: 0 });
+    }
+    const s = this.cbState.get(routeId)!;
+    if (s.failures >= this.cbThreshold && s.openUntil === 0) {
+      s.openUntil = now + this.cbCooldownMs;
+    }
+  }
+
+  private cbIsOpen(routeId: string): boolean {
+    const state = this.cbState.get(routeId);
+    if (!state) return false;
+    if (Date.now() < state.openUntil) return true;
+    // Cooldown expired — allow one probe request.
+    return false;
+  }
+
   private async attemptRoute(
     adapter: ProviderAdapter,
     route: NormalizedRoute,
     req: ChatRequest,
     notify: Notify,
+    signal?: AbortSignal,
   ): Promise<{ ok: true; value: ChatResponse } | { ok: false; attempt: AttemptRecord }> {
     const maxRetries = route.maxRetries;
     const poolSize = route.keyPool.length;
@@ -240,7 +359,9 @@ export class RoutingEngine {
       const key = route.keyPool[keyIndex % poolSize] as string;
       tries++;
       try {
-        const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl });
+        await this.fireBeforeRequest(route, req, tries);
+        const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl, signal });
+        await this.fireAfterResponse(route, req, tries, value);
         notify({
           routeId: route.id, provider: route.provider, model: route.model,
           outcome: "ok", attempts: tries, keyIndex,
@@ -287,6 +408,7 @@ export class RoutingEngine {
     route: NormalizedRoute,
     req: ChatRequest,
     notify: Notify,
+    signal?: AbortSignal,
   ): Promise<{ ok: true; value: AsyncIterable<ChatChunk> } | { ok: false; attempt: AttemptRecord }> {
     const maxRetries = route.maxRetries;
     const poolSize = route.keyPool.length;
@@ -300,7 +422,8 @@ export class RoutingEngine {
       const key = route.keyPool[keyIndex % poolSize] as string;
       tries++;
       try {
-        const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl });
+        await this.fireBeforeRequest(route, req, tries);
+        const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl, signal });
         const iterator = iterable[Symbol.asyncIterator]();
         const first = await iterator.next();
         if (first.done) {
@@ -313,6 +436,15 @@ export class RoutingEngine {
         notify({
           routeId: route.id, provider: route.provider, model: route.model,
           outcome: "ok", attempts: tries, keyIndex,
+        });
+        // Fire afterResponse with a synthetic response from first chunk metadata.
+        await this.fireAfterResponse(route, req, tries, {
+          id: first.value.id,
+          model: first.value.model,
+          provider: first.value.provider,
+          created: 0,
+          choices: [{ index: 0, message: { role: first.value.delta.role ?? "assistant", content: first.value.delta.content ?? null }, finish_reason: null }],
+          usage: first.value.usage ?? null,
         });
         return { ok: true, value: this.continueStream(route, first.value, iterator) };
       } catch (err) {
@@ -394,11 +526,12 @@ function normalizeRoute(route: ModelRoute): NormalizedRoute {
   };
 }
 
-/** Crude pre-hoc token estimate (~4 chars/token) used only for tpm gating. */
+/** Pre-hoc token estimate for tpm gating. ~3.5 chars/token (tighter than the
+ *  4-char rule to avoid undercounting on code/JSON) + per-message overhead. */
 export function estimateTokens(req: ChatRequest): number {
   let chars = 0;
   for (const msg of req.messages) {
-    chars += 4;
+    chars += 4; // role + separators
     if (typeof msg.content === "string") {
       chars += msg.content.length;
     } else if (Array.isArray(msg.content)) {
@@ -407,8 +540,16 @@ export function estimateTokens(req: ChatRequest): number {
         else chars += 1000; // fixed allowance per image
       }
     }
+    for (const tc of msg.tool_calls ?? []) {
+      chars += tc.function.name.length + tc.function.arguments.length + 20;
+    }
   }
-  return Math.ceil(chars / 4) + 1;
+  if (req.tools) {
+    for (const tool of req.tools) {
+      chars += tool.function.name.length + (tool.function.description?.length ?? 0) + 100;
+    }
+  }
+  return Math.ceil(chars / 3.5) + 1;
 }
 
 function toProviderError(err: unknown, provider: string): ProviderError {

@@ -47,11 +47,31 @@ Order matters: `build → typecheck` (turbo dep). Tests don't depend on build.
 
 Add new providers in `packages/core/src/providers/`. Implement `ProviderAdapter` interface. Register in `registry.ts`. Each adapter translates unified OpenAI-shaped requests to provider-specific wire format.
 
+## API surface
+
+### Core
+
+- `AIRouter` — public facade. `complete()`, `stream()`, `raw()`.
+- `RoutingEngine` — internal engine (exported for advanced use/testing).
+- `parseConfig(input, env?)` — validates + interpolates `${ENV_VAR}` patterns.
+- `streamText(stream)` / `collectStream(stream)` — stream collector utilities.
+
+### Options
+
+- `CallOptions`: `signal?: AbortSignal`, `onAttempt?: (event) => void`
+- `EngineOptions`: `store`, `fetchImpl`, `sleep`, `rng`, `middleware`, `circuitBreaker`
+- `Middleware`: `beforeRequest(ctx)`, `afterResponse(ctx, response)` — per-attempt hooks
+- `CircuitBreaker`: `{ threshold?: number, cooldownMs?: number }` — skip route after N consecutive failures
+
+### Config interpolation
+
+`parseConfig` resolves `${ENV_VAR}` in string values against provided env map or `process.env`. Missing vars throw `ConfigError`.
+
 ## Testing
 
 - Vitest, no snapshot tests
 - Tests read env vars (don't cache) — mock-based unit tests
-- Conformance tests validate request translation against JSON fixtures
+- Conformance tests validate both request AND response translation against JSON fixtures
 - Smoke test: `OPENAI_API_KEY=... npx tsx scripts/smoke.ts`
 
 ## Gotchas
@@ -61,3 +81,4 @@ Add new providers in `packages/core/src/providers/`. Implement `ProviderAdapter`
 - Redis adapter has no hard dep on ioredis/node-redis (bring your own client)
 - In-process rate limiting undercounts in multi-replica — use Redis adapter
 - Next.js apps use `--webpack` flag in dev/build scripts
+- Conformance runner uses `import.meta.dirname` (not Bun's `import.meta.dir`)

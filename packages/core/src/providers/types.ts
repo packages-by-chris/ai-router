@@ -26,6 +26,8 @@ export interface RawRequestOptions {
   headers?: Record<string, string>;
   /** HTTP method. Default "POST". */
   method?: string;
+  /** Caller-provided abort signal. Cancels the in-flight request when fired. */
+  signal?: AbortSignal;
 }
 
 /**

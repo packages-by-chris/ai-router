@@ -127,6 +127,113 @@
           }
         ]
       }
+    },
+    {
+      "name": "openai: basic completion response",
+      "kind": "openai_response",
+      "providerModel": "gpt-4o-mini",
+      "response": {
+        "id": "chatcmpl-1",
+        "model": "gpt-4o-mini-2024-07-18",
+        "created": 1700000000,
+        "choices": [
+          {
+            "index": 0,
+            "message": { "role": "assistant", "content": "Hello!" },
+            "finish_reason": "stop"
+          }
+        ],
+        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 }
+      },
+      "expected": {
+        "id": "chatcmpl-1",
+        "model": "gpt-4o-mini-2024-07-18",
+        "provider": "openai",
+        "created": 1700000000,
+        "usage": { "prompt_tokens": 5, "completion_tokens": 2, "total_tokens": 7 },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": "Hello!" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "openai: response with tool_calls",
+      "kind": "openai_response",
+      "providerModel": "gpt-4o-mini",
+      "response": {
+        "id": "chatcmpl-2",
+        "model": "gpt-4o-mini-2024-07-18",
+        "created": 1700000000,
+        "choices": [
+          {
+            "index": 0,
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                { "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }
+              ]
+            },
+            "finish_reason": "tool_calls"
+          }
+        ],
+        "usage": { "prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18 }
+      },
+      "expected": {
+        "id": "chatcmpl-2",
+        "model": "gpt-4o-mini-2024-07-18",
+        "provider": "openai",
+        "created": 1700000000,
+        "usage": { "prompt_tokens": 10, "completion_tokens": 8, "total_tokens": 18 },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "tool_calls",
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                { "id": "call_1", "type": "function", "function": { "name": "get_weather", "arguments": "{\"city\":\"Paris\"}" } }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "openai: null content preserved as null",
+      "kind": "openai_response",
+      "providerModel": "gpt-4o-mini",
+      "response": {
+        "id": "chatcmpl-3",
+        "model": "gpt-4o-mini-2024-07-18",
+        "created": 1700000000,
+        "choices": [
+          {
+            "index": 0,
+            "message": { "role": "assistant", "content": null },
+            "finish_reason": "stop"
+          }
+        ]
+      },
+      "expected": {
+        "id": "chatcmpl-3",
+        "model": "gpt-4o-mini-2024-07-18",
+        "provider": "openai",
+        "created": 1700000000,
+        "usage": null,
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": null }
+          }
+        ]
+      }
     }
   ]
 }

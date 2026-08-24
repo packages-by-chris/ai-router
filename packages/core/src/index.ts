@@ -2,7 +2,7 @@
 
 export { AIRouter, type AIRouterOptions } from "./router.js";
 export { RoutingEngine, estimateTokens } from "./engine.js";
-export type { AttemptEvent, AttemptOutcome, CallOptions, EngineOptions } from "./engine.js";
+export type { AttemptEvent, AttemptOutcome, CallOptions, EngineOptions, Middleware, RequestContext } from "./engine.js";
 export { parseConfig } from "./config/parse.js";
 export type { LimitRule, ModelRoute, ProviderId, RouterConfig } from "./config/schema.js";
 export { PROVIDER_IDS } from "./config/schema.js";
@@ -42,6 +42,7 @@ export type { AdapterContext, NormalizedRoute, ProviderAdapter, RawRequestOption
 export { parseRetryAfter, fetchWithTimeout, toNetworkError } from "./http/request.js";
 export type { FetchLike } from "./http/request.js";
 export { sseData, streamFromChunks } from "./http/sse.js";
+export { streamText, collectStream } from "./stream.js";
 export type {
   ChatChunk,
   ChatMessage,
