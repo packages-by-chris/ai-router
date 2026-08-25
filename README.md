@@ -2,10 +2,11 @@
 
 **An embeddable, provider-agnostic AI routing engine for TypeScript.**
 
-ai-router runs inside your application process — not beside it as a service.
-You declare routes across providers, and it handles the operational work of
-talking to them: fallback chains, retries, key-pool rotation, rate limiting,
-budgets, circuit breaking, and unified streaming. Your keys never leave your
+ai-router provides the routing and reliability capabilities of an AI gateway
+without requiring you to deploy one. It runs inside your application process,
+talks to providers directly over their native APIs, and handles the
+operational work — fallback chains, retries, key-pool rotation, rate limits,
+budgets, circuit breaking, unified streaming. Your API keys never leave your
 process.
 
 ```
@@ -34,45 +35,48 @@ its scope and covered by mock-based tests plus shared conformance fixtures.
 A Python SDK built against the same fixtures is planned but does not exist
 yet. The package is not yet published to npm.
 
-## What it is
+## What you get
 
-`@ai-router/core` is a client-side library that sits between your application
-code and AI provider APIs:
+- **Multi-provider routing** — one unified request shape, translated per provider in both directions.
+- **Ordered fallback chains** — a request tries route *i*, then *i+1*, … until one succeeds.
+- **Retries with backoff** — exponential, honoring provider `Retry-After`.
+- **API-key rotation** — key pools per route, rotated on key-related errors.
+- **Rate limiting** — per-route rpm (pre-flight) and tpm (post-hoc) sliding windows.
+- **Spend budgets** — rolling USD caps per route, priced from token usage.
+- **Circuit breaking** — skip failing routes, with graduated cooldowns.
+- **Unified streaming** — committed streams, SSE parsed for every wire format.
+- **Tool calling & multimodal input** — translated across providers, including streams.
+- **Guardrails** — input/output validators that block or rewrite traffic.
+- **Observability** — structured lifecycle events, per-attempt hooks, end-of-call summaries with TTFB, usage, and cost.
+- **Raw escape hatch** — send anything the unified layer doesn't model straight to the provider.
 
-- **In-process.** No gateway to deploy, no extra network hop, no vendor
-  holding your keys or your traffic.
-- **Provider abstraction.** One unified request/response shape (OpenAI-style,
-  the de facto lingua franca) translated per provider in both directions.
-- **Route-oriented.** Requests address a logical route id (`model: "fast"`),
-  never a raw provider model name. Routes are ordered into fallback chains.
-- **Zero runtime dependencies.** Only `fetch`, WebStreams, and WebCrypto.
-  Runs on Node 18+, Bun, Deno, and edge runtimes.
-- **Optional infrastructure.** Everything stateful is pluggable: rate-limit
-  storage defaults to in-process and accepts a Redis-backed store when you
-  outgrow one replica.
+Under the hood: 6 protocol adapters, 30+ provider presets, zero runtime
+dependencies (`fetch`, WebStreams, and WebCrypto only), Node 18+, Bun, Deno,
+and edge runtimes.
 
-## Why it exists
+## Routes, not model names
 
-Hosted AI gateways solve reliability by inserting a service between you and
-the provider. That adds a hop, an operator, a bill, and a third party
-terminating your credentials. Many applications don't need any of that — they
-need the *logic* of a gateway (fallback, rotation, throttling, cost caps)
-embedded directly in the app.
+Your application requests a **logical route**:
 
-ai-router is that logic as a library:
+```ts
+model: "fast"     // not "gpt-4o-mini"
+model: "smart"    // not "claude-sonnet-4-..."
+```
 
-| | Hosted gateway | Proxy server (LiteLLM) | ai-router |
-| --- | --- | --- | --- |
-| Runs | Vendor's cloud | A service you operate | In your process |
-| Provider keys | Often theirs / proxied | Yours, stored server-side | Yours, never leave the app |
-| Extra network hop | Yes | Yes | None |
-| Language | Any (HTTP) | Python-centric | TypeScript-native |
-| Failure domain | Vendor + your app | Proxy + your app | Your app only |
+ai-router decides which provider and model actually serve that route, walking
+the configured chain until one works. This keeps concerns separated:
 
-Choose ai-router when you want routing behavior as part of your TypeScript
-codebase rather than another piece of infrastructure to run.
+- Provider changes don't require application changes — edit config, not code.
+- Fallback stays outside business logic — no `try { openai } catch { claude }`.
+- Routing policy is centralized in one declarative place.
+- Provider failures are handled below the application layer, transparently.
+
+The `model` field is always a route id. It is never a raw provider model name.
 
 ## Quick start
+
+> Not yet on npm (see [Status](#status)); install from a git ref or local
+> path until the first release.
 
 ```bash
 npm install @ai-router/core
@@ -101,9 +105,9 @@ console.log(res.provider); // which route actually served it
 ```
 
 `${ENV_VAR}` strings are interpolated by `parseConfig` against `process.env`
-(or an explicit env map). You can also pass plain `apiKey` values directly.
+(or an explicit env map). Plain `apiKey` values work too.
 
-Streaming:
+Streaming uses the same routes and recovery machinery:
 
 ```ts
 const stream = await router.stream({
@@ -115,29 +119,27 @@ for await (const chunk of stream) {
 }
 ```
 
-## Core features
+## A library, not a gateway
 
-- **Unified API surface** — `complete()`, `stream()`, `embed()` share the
-  same routing machinery; responses carry the serving `provider`.
-- **Fallback chains** — ordered routes; a request tries route *i*, then
-  *i+1*, … until one succeeds.
-- **Retries with backoff** — exponential backoff (400 ms base, 8 s cap, 25%
-  jitter), honoring provider `Retry-After` as a floor.
-- **Key-pool rotation** — multiple keys per route, rotated round-robin on
-  rate-limit/auth/permission errors.
-- **Rate limiting** — per-route rpm (pre-flight) and tpm (accounted post-hoc
-  from provider usage reports) over a 60 s sliding window.
-- **Spend budgets** — rolling USD budget per route, enforced pre-flight from
-  recorded spend, priced via configurable token rates.
-- **Circuit breaking** — skip a route after N consecutive failures, with
-  graduated cooldowns up to a cap.
-- **Streaming** — committed streams with SSE parsing for every wire format;
-  usage arrives on the final chunk.
-- **Guardrails** — input/output validators that block or rewrite traffic.
-- **Observability** — structured lifecycle events, per-attempt hooks,
-  end-of-call summaries with TTFB, usage, and cost.
-- **Raw escape hatch** — send anything the unified layer doesn't model
-  straight to the provider endpoint.
+Hosted gateways solve reliability by inserting a service between you and the
+provider. That adds a network hop, an operator, a bill, and a third party
+terminating your credentials. Many applications don't need any of that — they
+need the *logic* of a gateway embedded in the app.
+
+| | Hosted gateway | Proxy server (LiteLLM) | ai-router |
+| --- | --- | --- | --- |
+| Runs | Vendor's cloud | A service you operate | In your process |
+| Extra network hop | Yes | Yes | None |
+| Provider keys | Often theirs / proxied | Yours, stored server-side | Yours, never leave the app |
+| Failure domain | Vendor + your app | Proxy + your app | Your app only |
+| Language | Any (HTTP) | Python-centric | TypeScript-native |
+| Shared state across replicas | Built in | Built in | Optional (`@ai-router/redis`) |
+
+Choose ai-router when routing behavior should live in your TypeScript
+codebase rather than in another piece of infrastructure to run. Choose a
+hosted gateway when many heterogeneous applications need one shared control
+plane — the two approaches also compose: ai-router can route to a gateway as
+just another OpenAI-compatible provider.
 
 ## Routing strategies
 
@@ -154,13 +156,14 @@ chain start; tail routes still serve if the chosen start fails.
 Latency tracking is in-process (per engine instance). See
 [Current limitations](#current-limitations).
 
-## Reliability
+## Reliability model
 
 Three recovery layers run in order before a request fails:
 
 1. **Retry same route + key** — retryable error kinds (`rate_limit`,
-   `server`, `network`, `timeout`) get exponential backoff. Per-route
-   `maxRetries` (default 2) and `timeoutMs` (default 30 s).
+   `server`, `network`, `timeout`) get exponential backoff (400 ms base,
+   8 s cap, 25% jitter), honoring provider `Retry-After` as a floor.
+   Per-route `maxRetries` (default 2) and `timeoutMs` (default 30 s).
 2. **Rotate key** — `rate_limit` / `auth` / `permission` errors try the next
    key in the pool immediately; the cursor spreads successive requests
    across the pool.
@@ -186,10 +189,10 @@ Additional layers:
   A provider swap mid-stream is impossible. Optional `streamIdleTimeoutMs`
   detects stalled streams on both sides of the boundary.
 
-Error classification drives all of this; see `errors.ts` — every failure is
-a typed `ProviderError` with a `kind` from a closed taxonomy
-(`rate_limit`, `auth`, `permission`, `not_found`, `invalid_request`,
-`server`, `network`, `timeout`, `unknown`).
+Error classification drives all of this. Every failure is a typed
+`ProviderError` with a `kind` from a closed taxonomy: `rate_limit`, `auth`,
+`permission`, `not_found`, `invalid_request`, `server`, `network`,
+`timeout`, `unknown`.
 
 ## Providers
 
@@ -204,14 +207,15 @@ Built-in adapters implement each provider's native wire protocol:
 | `bedrock` | Converse API, SigV4 signing over WebCrypto, event-stream parsing |
 | `vertex` | Regional Vertex endpoints, service-account JWT exchange over WebCrypto |
 
-### Presets
+### Adapters vs presets
 
-Most vendors serve OpenAI-compatible APIs; those are data, not adapters.
-30+ presets ship built in — groq, deepseek, mistral, together, fireworks,
-perplexity, xai, cerebras, openrouter, cohere, sambanova, nvidia,
-github-models, and more — plus keyless local runtimes (`ollama`, `lmstudio`,
-`vllm`). A preset resolves adapter + base URL + auth style from the provider
-id alone:
+Most vendors serve OpenAI-compatible APIs; those are data, not code. A preset
+resolves adapter + base URL + auth style from the provider id alone, so a new
+provider costs one table entry instead of an adapter. Native adapters are
+reserved for protocol outliers. 30+ presets ship built in — groq, deepseek,
+mistral, together, fireworks, perplexity, xai, cerebras, openrouter, cohere,
+sambanova, nvidia, github-models, and more — plus keyless local runtimes
+(`ollama`, `lmstudio`, `vllm`):
 
 ```ts
 { id: "fast", provider: "groq", model: "llama-3.3-70b-versatile",
@@ -219,7 +223,7 @@ id alone:
 { id: "local", provider: "ollama", model: "llama3.2" }  // no key needed
 ```
 
-Explicit `baseUrl` / `headers` on the route always win over preset values.
+Explicit `baseUrl` / `headers` on a route always win over preset values.
 
 ### Unified surface highlights
 
@@ -246,10 +250,10 @@ router.complete({
 });
 ```
 
-Anything still outside the unified layer goes through `router.raw(routeId, {
-path?, body?, headers?, method?, signal? })`, which returns the undecorated
-provider `Response`. Raw calls get rpm gating and share the key cursor, but
-no retries or fallback.
+Anything still outside the unified layer goes through
+`router.raw(routeId, { path?, body?, headers?, method?, signal? })`, which
+returns the undecorated provider `Response`. Raw calls get rpm gating and
+share the key cursor, but no retries or fallback.
 
 ## Configuration
 
@@ -309,11 +313,11 @@ same JSON fixtures the built-in adapters use — `runTranslationCases`,
 `record`, optional `used`, optional `snapshot`) and the response cache are
 interfaces, not concrete services.
 
-**Middleware & hooks.** `middleware.beforeRequest` /
-`afterResponse` run around each attempt; `onLog` emits structured lifecycle
-events (`call_start`, `cache_hit`, `route_skip`, `attempt_retry` with backoff
-delays, `guardrail_block`); `onFinish` fires once per call with wall time,
-TTFB (streams), attempts, usage, and cost. Callback errors are swallowed —
+**Middleware & hooks.** `middleware.beforeRequest` / `afterResponse` run
+around each attempt; `onLog` emits structured lifecycle events (`call_start`,
+`cache_hit`, `route_skip`, `attempt_retry` with backoff delays,
+`guardrail_block`); `onFinish` fires once per call with wall time, TTFB
+(streams), attempts, usage, and cost. Callback errors are swallowed —
 observability never breaks routing.
 
 ## Streaming
@@ -430,6 +434,9 @@ Honest list; none are hidden behind marketing:
 
 ## Roadmap
 
+Today a request flows: **routing policy → provider → retry/fallback**, with
+observed latency as the only adaptive signal.
+
 **Available**
 
 - Adapters: OpenAI, Azure, Anthropic, Gemini, Bedrock (Converse + SigV4),
@@ -451,10 +458,11 @@ Honest list; none are hidden behind marketing:
 
 **Exploring**
 
-- Routing signals beyond config order and observed latency: provider health,
-  cost-aware and quality-aware selection, adaptive routing informed by
-  application-level feedback. Today's `least-latency` strategy (latency EMA)
-  is the only adaptive signal implemented; nothing else should be assumed.
+- Routing signals beyond config order and observed latency, moving toward
+  adaptive selection: required request capabilities → provider health →
+  latency → cost → output quality → application-level feedback. Today's
+  `least-latency` strategy (latency EMA) is the only adaptive signal
+  implemented; nothing else should be assumed working.
 
 ## Contributing
 
