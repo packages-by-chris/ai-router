@@ -46,7 +46,7 @@ export type {
 } from "./guardrails.js";
 export { MemoryStore } from "./limiter/memory.js";
 export type { RateLimitDecision, RateLimitStore } from "./limiter/store.js";
-export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, providerLabel as openaiProviderLabel, mergeProviderOptions, usageDetails, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
+export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, providerLabel as openaiProviderLabel, mergeProviderOptions, usageDetails, translateChunk, translateRequest, translateResponse, wireMessages } from "./providers/openai.js";
 export { AzureAdapter, AZURE_DEFAULT_API_VERSION } from "./providers/azure.js";
 export {
   BedrockAdapter,

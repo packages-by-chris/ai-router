@@ -94,6 +94,19 @@ describe("RedisStore.take", () => {
     expect(errors).toHaveLength(1);
   });
 
+  test("used() in strict mode reports a saturated window (budgets keep enforcing)", async () => {
+    const errors: unknown[] = [];
+    const store = new RedisStore({
+      client: new FakeRedis(true),
+      failOpen: false,
+      onError: (e) => errors.push(e),
+    });
+    // Not 0: engine budget checks compare used >= limit, so MAX_SAFE_INTEGER
+    // marks every route as over-budget while Redis is down.
+    expect(await store.used("a:usd", 60_000)).toBe(Number.MAX_SAFE_INTEGER);
+    expect(errors).toHaveLength(1);
+  });
+
   test("namespaces keys and passes cost/window/limit/now/member as args", async () => {
     let t = 1_000_000;
     const client = new FakeRedis();

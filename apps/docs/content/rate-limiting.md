@@ -14,7 +14,10 @@ Routes can carry a budget:
 - **`rpm`** (requests/minute) is enforced **pre-flight**: an exhausted route is
   skipped before any HTTP call and the chain moves on.
 - **`tpm`** (tokens/minute) is accounted **post-hoc** from provider usage
-  reports on each response.
+  reports on each response. Pre-flight, the engine does a read-only check of
+  the window's recorded tokens and skips routes that are already at/over
+  their cap — no estimate is reserved, so a request is never double-counted.
+  Stores without a `used()` read-back skip this check.
 
 Windows are 60-second sliding windows. The engine never sleeps waiting for
 budget — it routes elsewhere.
@@ -84,7 +87,9 @@ Implementation notes:
   `RedisEvalClient` surface (`eval(script, keys, args)`).
 - **Fail-open by default** (`failOpen: true`): if Redis is down, requests are
   allowed and reported — the limiter is a guard, not the product. Set
-  `failOpen: false` to block traffic while unreachable instead.
+  `failOpen: false` to block traffic while unreachable instead; budget
+  read-backs then report a saturated window so spend/tpm caps keep
+  enforcing during an outage.
 
 Other `RedisStoreOptions`: `prefix` (key namespace, default `"ai-router:"`),
 `onError` (hook every client error into your logger/metrics), `now` (clock

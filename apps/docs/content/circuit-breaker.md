@@ -46,7 +46,7 @@ const router = new AIRouter(config, {
 - Failures are: `rate_limit`, `server`, `network`, `timeout`, `auth`, `permission`, `invalid_request`.
 - Key rotation (via `isKeyRelatedKind`) does **not** reset the circuit — it's still a failure for that route.
 - Success (`complete` returns or first stream chunk arrives) resets the failure counter to zero.
-- The circuit breaker is **per-engine instance**. Each `AIRouter` has its own circuit state.
+- The circuit breaker is **per-engine instance**. Each `AIRouter` has its own circuit state — and each process/replica its own `AIRouter`, so multi-replica deployments trip breakers independently (unlike the rate-limit store, there is no shared Redis backend for breaker state).
 
 ## Interaction with fallback
 

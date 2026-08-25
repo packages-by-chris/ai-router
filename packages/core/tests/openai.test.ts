@@ -62,6 +62,68 @@ describe("translateRequest", () => {
     const body = translateRequest({ model: "m", messages: [{ role: "user", content: parts }] }, "m", false);
     expect(body.messages).toEqual([{ role: "user", content: parts }]);
   });
+
+  test("strips engine-only message fields (providerOptions, reasoning)", () => {
+    const body = translateRequest(
+      {
+        model: "m",
+        messages: [
+          { role: "system", content: "be terse", providerOptions: { anthropic: { cache_control: true } } } as never,
+          { role: "assistant", content: "ans", reasoning: "because" },
+          { role: "user", content: "hi" },
+        ],
+      },
+      "m",
+      false,
+    );
+    expect(body.messages).toEqual([
+      { role: "system", content: "be terse" },
+      { role: "assistant", content: "ans" },
+      { role: "user", content: "hi" },
+    ]);
+  });
+
+  test("keeps tool history fields when sanitizing messages", () => {
+    const body = translateRequest(
+      {
+        model: "m",
+        messages: [
+          {
+            role: "assistant",
+            content: null,
+            tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+            reasoning: "hmm",
+          },
+          { role: "tool", tool_call_id: "c1", content: "ok" },
+        ],
+      },
+      "m",
+      false,
+    );
+    expect(body.messages).toEqual([
+      {
+        role: "assistant",
+        content: null,
+        tool_calls: [{ id: "c1", type: "function", function: { name: "f", arguments: "{}" } }],
+      },
+      { role: "tool", tool_call_id: "c1", content: "ok" },
+    ]);
+  });
+
+  test("providerOptions.openai.stream_options overrides the default; null removes it", () => {
+    const custom = translateRequest(
+      { ...req, providerOptions: { openai: { stream_options: { include_usage: false } } } },
+      "m", true,
+    );
+    expect(custom.stream_options).toEqual({ include_usage: false });
+
+    const removed = translateRequest(
+      { ...req, providerOptions: { openai: { stream_options: null } } },
+      "m", true,
+    );
+    expect("stream_options" in removed).toBe(false);
+    expect(removed.stream).toBe(true);
+  });
 });
 
 describe("translateResponse / translateChunk", () => {

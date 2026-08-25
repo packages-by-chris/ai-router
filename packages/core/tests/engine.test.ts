@@ -86,7 +86,7 @@ describe("RoutingEngine.complete", () => {
     expect(res.model).toBe("b-model");
   });
 
-  test("accounts tpm post-hoc and gates the next request", async () => {
+  test("accounts tpm post-hoc exactly once and gates the next request", async () => {
     let t = 0;
     const store = new MemoryStore({ now: () => t });
     const mock = new MockFetch(
@@ -99,9 +99,12 @@ describe("RoutingEngine.complete", () => {
       store,
     });
 
-    await engine.complete(req); // records 5 tokens against a:tpm
+    await engine.complete(req); // records exactly the reported 5 tokens
+    // Single-count: window holds ONLY the provider-reported usage (no
+    // pre-flight estimate reservation on top).
+    expect(store.snapshot()["a:tpm"]).toBe(5);
     t = 1;
-    const res2 = await engine.complete(req); // estimate(~4) + 5 > 5 -> skip a, use b
+    const res2 = await engine.complete(req); // used(5) >= limit(5) -> skip a, use b
     expect(mock.calls[0]!.url).toContain("api.openai.com");
     expect(mock.calls[1]!.url).toContain("b.example");
     expect(res2.model).toBe("b-model");
@@ -393,5 +396,35 @@ describe("RoutingEngine.stream", () => {
     // a:tpm now holds 5 of 5 -> next request on route a must be gated.
     const blocked = await store.take("a:tpm", 1, 60_000, 5);
     expect(blocked.allowed).toBe(false);
+  });
+
+  test("stream summary fires at stream end with usage + cost from the final chunk", async () => {
+    const summaries: import("../src/engine.js").CallSummaryEvent[] = [];
+    const events = [
+      chunkJson(), // first chunk: no usage
+      JSON.stringify({
+        id: "x", model: "a-model", choices: [{ index: 0, delta: {}, finish_reason: "stop" }],
+        usage: { prompt_tokens: 1_000_000, completion_tokens: 0, total_tokens: 1_000_000 },
+      }),
+    ];
+    const mock = new MockFetch(sseResponse(events));
+    const engine = new RoutingEngine(config(), {
+      fetchImpl: mock.fetch,
+      sleep: noopSleep,
+      pricing: { a: { input: 3, output: 7 } },
+    });
+
+    const stream = await engine.stream(req, { onFinish: (s) => summaries.push(s) });
+    // Not fired at commit:
+    expect(summaries).toHaveLength(0);
+    for await (const _ of stream) void _;
+
+    expect(summaries).toHaveLength(1); // exactly once, after iteration
+    const s = summaries[0]!;
+    expect(s.outcome).toBe("ok");
+    expect(s.routeId).toBe("a");
+    expect(s.usage?.total_tokens).toBe(1_000_000);
+    expect(s.costUsd).toBe(3);
+    expect(typeof s.ttfbMs).toBe("number");
   });
 });

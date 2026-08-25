@@ -294,11 +294,13 @@ export class VertexAdapter implements ProviderAdapter {
       let roleSent = false;
       let finish: string | null = null;
       let usage: ChatChunk["usage"];
+      let lastId = "";
+      let lastModel = "";
 
       const ensureRole = function* (): Generator<ChatChunk> {
         if (!roleSent) {
           roleSent = true;
-          yield { id: "", model: "", provider: "vertex", delta: { role: "assistant" }, finish_reason: null };
+          yield { id: lastId, model: lastModel, provider: "vertex", delta: { role: "assistant" }, finish_reason: null };
         }
       };
 
@@ -313,12 +315,14 @@ export class VertexAdapter implements ProviderAdapter {
         const choice = partial.choices[0];
         if (!choice) continue;
         const message = choice.message;
+        if (partial.id) lastId = partial.id;
+        if (partial.model) lastModel = partial.model;
 
         if (typeof message.content === "string" && message.content !== "") {
           yield* ensureRole();
           yield {
-            id: partial.id,
-            model: partial.model,
+            id: lastId,
+            model: lastModel,
             provider: "vertex",
             delta: { content: message.content },
             finish_reason: null,
@@ -327,8 +331,8 @@ export class VertexAdapter implements ProviderAdapter {
         if (message.reasoning) {
           yield* ensureRole();
           yield {
-            id: partial.id,
-            model: partial.model,
+            id: lastId,
+            model: lastModel,
             provider: "vertex",
             delta: { reasoning: message.reasoning },
             finish_reason: null,
@@ -337,8 +341,8 @@ export class VertexAdapter implements ProviderAdapter {
         if (message.tool_calls?.length) {
           yield* ensureRole();
           yield {
-            id: partial.id,
-            model: partial.model,
+            id: lastId,
+            model: lastModel,
             provider: "vertex",
             delta: {
               tool_calls: message.tool_calls.map((tc, index) => ({
@@ -357,8 +361,8 @@ export class VertexAdapter implements ProviderAdapter {
 
       if (finish !== null || usage !== undefined) {
         yield {
-          id: "",
-          model: "",
+          id: lastId,
+          model: lastModel,
           provider: "vertex",
           delta: {},
           finish_reason: finish,

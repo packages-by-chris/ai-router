@@ -89,6 +89,10 @@ export interface CallSummaryEvent {
   /** Serving route on success. */
   routeId?: string;
   provider?: string;
+  /**
+   * Total adapter tries across all routes (failed routes' tries plus the
+   * winning route's). Streams fire this when iteration ends.
+   */
   attempts: number;
   /** Failure only: classified error kind when a ProviderError settled the call. */
   kind?: ErrorKind;
@@ -174,6 +178,8 @@ export interface EngineOptions {
    * Circuit breaker. After `threshold` consecutive failures on a route,
    * skip it for `cooldownMs`. Each subsequent breach doubles the cooldown
    * up to `maxCooldownMs` (default: no doubling — fixed cooldown).
+   * State is per-engine-instance: multi-replica deployments each trip their
+   * own breakers (unlike the rate-limit store, there is no shared backend).
    */
   circuitBreaker?: { threshold?: number; cooldownMs?: number; maxCooldownMs?: number };
   /**
@@ -282,6 +288,41 @@ export class RoutingEngine {
     }
   }
 
+  /**
+   * Record + notify + log a pre-flight route skip (circuit open, unsupported
+   * provider/embeddings, exhausted rate limit or budget). Shared by
+   * complete/stream/embed so the three loops stay in lockstep.
+   */
+  private skipRoute(
+    route: NormalizedRoute,
+    outcome: "circuit_open" | "unsupported" | "skipped_budget" | "skipped_rate_limit",
+    message: string,
+    attempts: AttemptRecord[],
+    notify: Notify,
+    callOnLog?: (event: LogEvent) => void,
+  ): void {
+    const record: AttemptRecord = {
+      routeId: route.id, provider: route.provider, model: route.model,
+      outcome, attempts: 0, message,
+    };
+    attempts.push(record);
+    notify(record);
+    this.emitLog(callOnLog, {
+      type: "route_skip",
+      ts: Date.now(),
+      routeId: route.id,
+      provider: route.provider,
+      reason:
+        outcome === "circuit_open"
+          ? "circuit_open"
+          : outcome === "unsupported"
+            ? "unsupported"
+            : outcome === "skipped_budget"
+              ? "budget"
+              : "rate_limit",
+    });
+  }
+
   async complete(req: ChatRequest, opts: CallOptions = {}): Promise<ChatResponse> {
     const startedAt = Date.now();
     const notify = opts.onAttempt ?? noopNotify;
@@ -339,26 +380,7 @@ export class RoutingEngine {
       for (const route of this.resolveChain(req.model)) {
         if (signal?.aborted) throw abortFrom(signal);
         if (this.cbIsOpen(route.id)) {
-          const record: AttemptRecord = {
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
-          };
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+          this.skipRoute(route, "circuit_open", "circuit breaker open", attempts, notify, opts.onLog);
           continue;
         }
 
@@ -366,45 +388,18 @@ export class RoutingEngine {
         try {
           adapter = getAdapter(route.adapterId ?? route.provider);
         } catch (err) {
-          const record = unsupportedAttempt(route, err);
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+          this.skipRoute(route, "unsupported", errorMessage(err), attempts, notify, opts.onLog);
           continue;
         }
 
         const overBudget = await this.budgetExhausted(route);
-        if (overBudget || !(await this.takeBudget(route, estimateTokens(req)))) {
-          const record = overBudget ? skippedBudgetAttempt(route) : skippedRateLimitAttempt(route);
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+        if (overBudget || !(await this.takeBudget(route))) {
+          this.skipRoute(
+            route,
+            overBudget ? "skipped_budget" : "skipped_rate_limit",
+            overBudget ? "usd spend budget exhausted" : "rate limit budget exhausted pre-flight",
+            attempts, notify, opts.onLog,
+          );
           continue;
         }
 
@@ -469,7 +464,7 @@ export class RoutingEngine {
         totalMs: Date.now() - startedAt,
         routeId: route.id,
         provider: route.provider,
-        attempts: attempts.length + 1,
+        attempts: totalTries(attempts, served.tries),
         usage: usage ?? undefined,
         costUsd: value.cost_usd,
       });
@@ -478,7 +473,7 @@ export class RoutingEngine {
       onFinish?.({
         outcome: "failed",
         totalMs: Date.now() - startedAt,
-        attempts: attempts.length,
+        attempts: totalTries(attempts, 0),
         kind: err instanceof ProviderError ? err.kind : undefined,
       });
       throw err;
@@ -516,38 +511,10 @@ export class RoutingEngine {
         }
         throw err;
       }
-      let served:
-        | {
-            route: NormalizedRoute;
-            iterator: AsyncIterator<ChatChunk>;
-            first: ChatChunk;
-            ttfbMs: number;
-          }
-        | undefined;
-
       for (const route of this.resolveChain(req.model)) {
         if (signal?.aborted) throw abortFrom(signal);
         if (this.cbIsOpen(route.id)) {
-          const record: AttemptRecord = {
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
-          };
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+          this.skipRoute(route, "circuit_open", "circuit breaker open", attempts, notify, opts.onLog);
           continue;
         }
 
@@ -555,45 +522,18 @@ export class RoutingEngine {
         try {
           adapter = getAdapter(route.adapterId ?? route.provider);
         } catch (err) {
-          const record = unsupportedAttempt(route, err);
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+          this.skipRoute(route, "unsupported", errorMessage(err), attempts, notify, opts.onLog);
           continue;
         }
 
         const overBudget = await this.budgetExhausted(route);
-        if (overBudget || !(await this.takeBudget(route, estimateTokens(req)))) {
-          const record = overBudget ? skippedBudgetAttempt(route) : skippedRateLimitAttempt(route);
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+        if (overBudget || !(await this.takeBudget(route))) {
+          this.skipRoute(
+            route,
+            overBudget ? "skipped_budget" : "skipped_rate_limit",
+            overBudget ? "usd spend budget exhausted" : "rate limit budget exhausted pre-flight",
+            attempts, notify, opts.onLog,
+          );
           continue;
         }
 
@@ -605,37 +545,28 @@ export class RoutingEngine {
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
-          served = {
-            route,
-            iterator: result.value.iterator,
-            first: result.value.first,
+          // Summary fires when iteration ends (ok or failed) so usage/costUsd
+          // come from the final usage-bearing chunk, not the first.
+          return this.continueStream(route, result.value.iterator, result.value.first, {
+            startedAt,
             ttfbMs: timing.latencyMs,
-          };
-          break;
+            attempts: totalTries(attempts, result.tries),
+            onFinish,
+          });
         }
         this.cbRecordFailure(route.id);
         attempts.push(result.attempt);
       }
 
-      if (!served) throw new AllRoutesFailedError(attempts);
-
-      const { route, iterator, first, ttfbMs } = served;
-      onFinish?.({
-        outcome: "ok",
-        totalMs: Date.now() - startedAt,
-        ttfbMs,
-        routeId: route.id,
-        provider: route.provider,
-        attempts: attempts.length + 1,
-        usage: first.usage,
-        costUsd: first.cost_usd,
-      });
-      return this.continueStream(route, iterator, first);
+      throw new AllRoutesFailedError(attempts);
     } catch (err) {
+      // Pre-commit failures only: post-commit summaries are fired by
+      // continueStream when iteration ends.
       onFinish?.({
         outcome: "failed",
         totalMs: Date.now() - startedAt,
-        attempts: attempts.length,
+        attempts: totalTries(attempts, 0),
+        kind: err instanceof ProviderError ? err.kind : undefined,
       });
       throw err;
     }
@@ -657,14 +588,21 @@ export class RoutingEngine {
     try {
       this.emitLog(opts.onLog, { type: "call_start", ts: Date.now(), op: "embed", model: req.model });
       // Input guardrails apply to embedding requests too. Output guards
-      // target ChatResponse shapes and are skipped for embed().
+      // target ChatResponse shapes and are skipped for embed(). Guards see a
+      // ChatRequest view of the input; a `replace` verdict is mapped back
+      // onto req.input (array inputs collapse to the joined string).
+      const probe: ChatRequest = {
+        model: req.model,
+        messages: [
+          { role: "user", content: Array.isArray(req.input) ? req.input.join("\n") : req.input },
+        ],
+      };
       try {
-        await runGuardrails("input", this.guardrails?.input, {
-          model: req.model,
-          messages: [
-            { role: "user" as const, content: Array.isArray(req.input) ? req.input.join("\n") : req.input },
-          ],
-        });
+        const guarded = await runGuardrails("input", this.guardrails?.input, probe);
+        if (guarded !== probe) {
+          const content = guarded.messages[0]?.content;
+          if (typeof content === "string") req = { ...req, input: content };
+        }
       } catch (err) {
         if (err instanceof GuardrailBlockedError) {
           this.emitLog(opts.onLog, {
@@ -677,31 +615,12 @@ export class RoutingEngine {
         }
         throw err;
       }
-      let served: { route: NormalizedRoute; value: EmbeddingResponse } | undefined;
+      let served: { route: NormalizedRoute; value: EmbeddingResponse; tries: number } | undefined;
 
       for (const route of this.resolveChain(req.model)) {
         if (signal?.aborted) throw abortFrom(signal);
         if (this.cbIsOpen(route.id)) {
-          const record: AttemptRecord = {
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
-          };
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+          this.skipRoute(route, "circuit_open", "circuit breaker open", attempts, notify, opts.onLog);
           continue;
         }
 
@@ -709,60 +628,20 @@ export class RoutingEngine {
         try {
           adapter = getAdapter(route.adapterId ?? route.provider);
         } catch (err) {
-          const record = unsupportedAttempt(route, err);
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
+          this.skipRoute(route, "unsupported", errorMessage(err), attempts, notify, opts.onLog);
           continue;
         }
         if (!adapter.embed) {
-          const record = unsupportedAttempt(
-            route,
-            new ConfigError(`${route.provider} does not support embeddings`),
+          this.skipRoute(
+            route, "unsupported",
+            new ConfigError(`${route.provider} does not support embeddings`).message,
+            attempts, notify, opts.onLog,
           );
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason:
-              record.outcome === "circuit_open"
-                ? "circuit_open"
-                : record.outcome === "unsupported"
-                  ? "unsupported"
-                  : record.outcome === "skipped_budget"
-                    ? "budget"
-                    : "rate_limit",
-          });
           continue;
         }
 
-        if (!(await this.takeBudget(route, estimateEmbeddingTokens(req)))) {
-          const record = skippedRateLimitAttempt(route);
-          attempts.push(record);
-          notify(record);
-          this.emitLog(opts.onLog, {
-            type: "route_skip",
-            ts: Date.now(),
-            routeId: route.id,
-            provider: route.provider,
-            reason: "rate_limit",
-          });
+        if (!(await this.takeBudget(route))) {
+          this.skipRoute(route, "skipped_rate_limit", "rate limit budget exhausted pre-flight", attempts, notify, opts.onLog);
           continue;
         }
 
@@ -771,7 +650,7 @@ export class RoutingEngine {
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
-          served = { route, value: result.value };
+          served = { route, value: result.value, tries: result.tries };
           break;
         }
         this.cbRecordFailure(route.id);
@@ -792,13 +671,18 @@ export class RoutingEngine {
         totalMs: Date.now() - startedAt,
         routeId: route.id,
         provider: route.provider,
-        attempts: attempts.length + 1,
+        attempts: totalTries(attempts, served.tries),
         usage: usage ?? undefined,
         costUsd: value.cost_usd,
       });
       return value;
     } catch (err) {
-      onFinish?.({ outcome: "failed", totalMs: Date.now() - startedAt, attempts: attempts.length });
+      onFinish?.({
+        outcome: "failed",
+        totalMs: Date.now() - startedAt,
+        attempts: totalTries(attempts, 0),
+        kind: err instanceof ProviderError ? err.kind : undefined,
+      });
       throw err;
     }
   }
@@ -1019,35 +903,76 @@ export class RoutingEngine {
     return { ok: false, attempt };
   }
 
+  /**
+   * Yields the committed first chunk, then the rest. Fires the call's single
+   * onFinish when iteration ends — ok with usage/costUsd from the last
+   * usage-bearing chunk, or failed with the classified kind on mid-stream
+   * errors. Abandoned streams (caller breaks early) fire nothing.
+   */
   private async *continueStream(
     route: NormalizedRoute,
     iterator: AsyncIterator<ChatChunk>,
     first: ChatChunk,
+    summary: {
+      startedAt: number;
+      ttfbMs: number;
+      attempts: number;
+      onFinish?: (s: CallSummaryEvent) => void;
+    },
   ): AsyncGenerator<ChatChunk> {
-    yield first;
-    for (;;) {
-      const next = route.streamIdleTimeoutMs
-        ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
-        : await iterator.next();
-      if (next.done) return;
-      const chunk = next.value;
-      if (chunk.usage && route.limits.tpm !== undefined) {
-        await this.store.record(`${route.id}:tpm`, chunk.usage.total_tokens, WINDOW_MS);
-      }
-      const price = this.priceFor(route);
-      if (price && chunk.usage) {
-        chunk.cost_usd = computeCost(chunk.usage, price);
-        // Post-hoc spend accounting feeds the route's rolling budget
-        // (micro-dollar integers — see complete()).
-        if (route.budget) {
-          await this.store.record(
-            `${route.id}:usd`,
-            Math.round(chunk.cost_usd * 1e6),
-            route.budget.windowMs ?? WINDOW_MS,
-          );
+    let usage: Usage | undefined;
+    let costUsd: number | undefined;
+    try {
+      if (first.usage) usage = first.usage;
+      if (first.cost_usd !== undefined) costUsd = first.cost_usd;
+      yield first;
+      for (;;) {
+        const next = route.streamIdleTimeoutMs
+          ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
+          : await iterator.next();
+        if (next.done) break;
+        const chunk = next.value;
+        if (chunk.usage && route.limits.tpm !== undefined) {
+          await this.store.record(`${route.id}:tpm`, chunk.usage.total_tokens, WINDOW_MS);
         }
+        const price = this.priceFor(route);
+        if (price && chunk.usage) {
+          chunk.cost_usd = computeCost(chunk.usage, price);
+          // Post-hoc spend accounting feeds the route's rolling budget
+          // (micro-dollar integers — see complete()).
+          if (route.budget) {
+            await this.store.record(
+              `${route.id}:usd`,
+              Math.round(chunk.cost_usd * 1e6),
+              route.budget.windowMs ?? WINDOW_MS,
+            );
+          }
+        }
+        if (chunk.usage) usage = chunk.usage;
+        if (chunk.cost_usd !== undefined) costUsd = chunk.cost_usd;
+        yield chunk;
       }
-      yield chunk;
+      summary.onFinish?.({
+        outcome: "ok",
+        totalMs: Date.now() - summary.startedAt,
+        ttfbMs: summary.ttfbMs,
+        routeId: route.id,
+        provider: route.provider,
+        attempts: summary.attempts,
+        ...(usage !== undefined ? { usage } : {}),
+        ...(costUsd !== undefined ? { costUsd } : {}),
+      });
+    } catch (err) {
+      summary.onFinish?.({
+        outcome: "failed",
+        totalMs: Date.now() - summary.startedAt,
+        ttfbMs: summary.ttfbMs,
+        routeId: route.id,
+        provider: route.provider,
+        attempts: summary.attempts,
+        kind: err instanceof ProviderError ? err.kind : undefined,
+      });
+      throw err;
     }
   }
 
@@ -1124,22 +1049,35 @@ export class RoutingEngine {
     this.latencyEma.set(routeId, prev === undefined ? ms : 0.3 * ms + 0.7 * prev);
   }
 
-  /** Pre-flight budget check. rpm costs 1 request; tpm costs `tokenCost`. */
-  private async takeBudget(route: NormalizedRoute, tokenCost?: number): Promise<boolean> {
+  /**
+   * Pre-flight gating. rpm consumes 1 request via take(). tpm is a READ-ONLY
+   * check: actual tokens are recorded post-hoc from provider usage reports,
+   * so reserving an estimate pre-flight would double-count once the actuals
+   * land in the same window (the reservation can't be reconciled away in a
+   * sliding-window log). Stores without read-back fail open, like budgets.
+   */
+  private async takeBudget(route: NormalizedRoute): Promise<boolean> {
+    if (
+      route.limits.tpm !== undefined &&
+      (await this.windowTotal(`${route.id}:tpm`, WINDOW_MS)) >= route.limits.tpm
+    ) {
+      return false;
+    }
     if (route.limits.rpm !== undefined) {
       const decision = await this.store.take(`${route.id}:rpm`, 1, WINDOW_MS, route.limits.rpm);
       if (!decision.allowed) return false;
     }
-    if (route.limits.tpm !== undefined && tokenCost !== undefined) {
-      const decision = await this.store.take(
-        `${route.id}:tpm`,
-        tokenCost,
-        WINDOW_MS,
-        route.limits.tpm,
-      );
-      if (!decision.allowed) return false;
-    }
     return true;
+  }
+
+  /** Read-only window total; errors and missing read-back fail open. */
+  private async windowTotal(key: string, windowMs: number): Promise<number> {
+    if (!this.store.used) return 0;
+    try {
+      return await this.store.used(key, windowMs);
+    } catch {
+      return 0;
+    }
   }
 
   /**
@@ -1149,12 +1087,8 @@ export class RoutingEngine {
    */
   private async budgetExhausted(route: NormalizedRoute): Promise<boolean> {
     if (!route.budget || !this.store.used) return false;
-    try {
-      const used = await this.store.used(`${route.id}:usd`, route.budget.windowMs ?? WINDOW_MS);
-      return used >= Math.round(route.budget.usd * 1e6);
-    } catch {
-      return false;
-    }
+    const used = await this.windowTotal(`${route.id}:usd`, route.budget.windowMs ?? WINDOW_MS);
+    return used >= Math.round(route.budget.usd * 1e6);
   }
 
   private async fireBeforeRequest(route: NormalizedRoute, req: ChatRequest, attempt: number): Promise<void> {
@@ -1255,8 +1189,13 @@ function normalizeRoute(route: ModelRoute): NormalizedRoute {
   };
 }
 
-/** Pre-hoc token estimate for tpm gating. ~3.5 chars/token (tighter than the
- *  4-char rule to avoid undercounting on code/JSON) + per-message overhead. */
+/**
+ * Public heuristic token estimate (~3.5 chars/token, tighter than the 4-char
+ * rule to avoid undercounting on code/JSON + per-message overhead). Exported
+ * for callers building their own pre-flight gating; the engine's tpm
+ * accounting is post-hoc from provider usage reports and no longer consumes
+ * estimates.
+ */
 export function estimateTokens(req: Pick<ChatRequest, "messages" | "tools">): number {
   let chars = 0;
   for (const msg of req.messages) {
@@ -1278,12 +1217,6 @@ export function estimateTokens(req: Pick<ChatRequest, "messages" | "tools">): nu
       chars += tool.function.name.length + (tool.function.description?.length ?? 0) + 100;
     }
   }
-  return Math.ceil(chars / 3.5) + 1;
-}
-
-/** Same heuristic as estimateTokens, for embedding inputs. */
-function estimateEmbeddingTokens(req: EmbeddingRequest): number {
-  const chars = Array.isArray(req.input) ? req.input.join("").length : req.input.length;
   return Math.ceil(chars / 3.5) + 1;
 }
 
@@ -1314,44 +1247,21 @@ function failedAttempt(
   };
 }
 
-function skippedRateLimitAttempt(route: NormalizedRoute): AttemptRecord {
-  return {
-    routeId: route.id,
-    provider: route.provider,
-    model: route.model,
-    outcome: "skipped_rate_limit",
-    attempts: 0,
-    message: "rate limit budget exhausted pre-flight",
-  };
-}
-
-function skippedBudgetAttempt(route: NormalizedRoute): AttemptRecord {
-  return {
-    routeId: route.id,
-    provider: route.provider,
-    model: route.model,
-    outcome: "skipped_budget",
-    attempts: 0,
-    message: "usd spend budget exhausted",
-  };
-}
-
-function unsupportedAttempt(route: NormalizedRoute, err: unknown): AttemptRecord {
-  return {
-    routeId: route.id,
-    provider: route.provider,
-    model: route.model,
-    outcome: "unsupported",
-    attempts: 0,
-    message: errorMessage(err),
-  };
-}
-
 function emptyChunk(): ChatChunk {
   return { id: "", model: "", provider: "", delta: {}, finish_reason: null };
 }
 
-/** Stable FNV-1a hash for exact-match response cache keys. */
+/** Total adapter tries: failed routes' tries plus the winning route's. */
+function totalTries(attempts: AttemptRecord[], winningTries: number): number {
+  return attempts.reduce((n, a) => n + a.attempts, 0) + winningTries;
+}
+
+/**
+ * Stable FNV-1a hash for exact-match response cache keys. 32-bit: fine for
+ * cache dedup of well-formed requests, but collisions serve a wrong cached
+ * response — use a stronger hash (SHA-256) in the backing store's key if
+ * adversarial key construction is possible.
+ */
 function fnv1a(input: string): string {
   let h = 0x811c9dc5;
   for (let i = 0; i < input.length; i++) {

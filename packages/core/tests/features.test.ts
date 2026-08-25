@@ -77,6 +77,37 @@ describe("reasoning_effort mapping", () => {
     expect(body.top_p).toBeUndefined();
   });
 
+  test("anthropic thinking raises max_tokens above the budget", () => {
+    // Default max_tokens (4096) is below the high budget (24576) -> raised.
+    const body = anthropicTranslate({ ...req, reasoning_effort: "high" }, "claude-sonnet-4", false);
+    expect(body.max_tokens).toBe(24576 + 1024);
+
+    // Explicit max_tokens above the budget passes through untouched.
+    const explicit = anthropicTranslate(
+      { ...req, reasoning_effort: "low", max_tokens: 20_000 },
+      "claude-sonnet-4", false,
+    );
+    expect(explicit.max_tokens).toBe(20_000);
+  });
+
+  test("anthropic thinking downgrades forced tool_choice to auto", () => {
+    const tools = [{
+      type: "function" as const,
+      function: { name: "f", parameters: { type: "object", properties: {} } },
+    }];
+    const forced = anthropicTranslate(
+      { ...req, reasoning_effort: "medium", tools, tool_choice: "required" },
+      "claude-sonnet-4", false,
+    );
+    expect(forced.thinking).toEqual({ type: "enabled", budget_tokens: 12288 });
+    expect(forced.tool_choice).toBeUndefined(); // any -> omitted (auto)
+    expect(forced.tools).toBeDefined();
+
+    // Without thinking, required still maps to { type: "any" }.
+    const plain = anthropicTranslate({ ...req, tools, tool_choice: "required" }, "c", false);
+    expect(plain.tool_choice).toEqual({ type: "any" });
+  });
+
   test("gemini maps effort to thinkingConfig with thoughts included", () => {
     const body = geminiTranslate({ ...req, reasoning_effort: "low" }, "gemini-2.5-flash", false);
     expect(body.generationConfig).toMatchObject({
@@ -578,6 +609,18 @@ describe("onFinish summary", () => {
     expect(captured[0]!.outcome).toBe("failed");
     expect(captured[0]!.attempts).toBe(3); // a, b, c all failed
     expect(captured[0]!.totalMs).toBeGreaterThanOrEqual(0);
+  });
+
+  test("counts retries within the winning route", async () => {
+    const mock = new MockFetch(jsonResponse(500, {}), jsonResponse(200, completionJson()));
+    const captured: CallSummaryEvent[] = [];
+    const engine = new RoutingEngine(
+      parseConfig({ routes: [{ ...routes()[0]!, maxRetries: 1 }] }),
+      { fetchImpl: mock.fetch, sleep: noopSleep },
+    );
+    await engine.complete(req, { onFinish: (s) => captured.push(s) });
+    // Route a retried once after the 500 before succeeding.
+    expect(captured[0]).toMatchObject({ outcome: "ok", routeId: "a", attempts: 2 });
   });
 
   test("stream success reports ttfbMs", async () => {

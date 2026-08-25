@@ -8,6 +8,7 @@ import { requireOk, fetchWithTimeout, toNetworkError } from "../http/request.js"
 import { sseData } from "../http/sse.js";
 import type {
   ChatChunk,
+  ChatMessage,
   ChatRequest,
   ChatResponse,
   Delta,
@@ -55,10 +56,25 @@ export function mergeProviderOptions(
   return body;
 }
 
+/**
+ * Wire-safe messages. Strips engine-only fields (providerOptions,
+ * reasoning) that the unified ChatMessage carries but the OpenAI wire
+ * protocol rejects ("Unrecognized request argument").
+ */
+export function wireMessages(messages: ChatMessage[]): Record<string, unknown>[] {
+  return messages.map((m) => ({
+    role: m.role,
+    content: m.content,
+    ...(m.name !== undefined ? { name: m.name } : {}),
+    ...(m.tool_calls !== undefined ? { tool_calls: m.tool_calls } : {}),
+    ...(m.tool_call_id !== undefined ? { tool_call_id: m.tool_call_id } : {}),
+  }));
+}
+
 export function translateRequest(req: ChatRequest, providerModel: string, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: providerModel,
-    messages: req.messages,
+    messages: wireMessages(req.messages),
   };
   if (req.tools !== undefined) body.tools = req.tools;
   if (req.tool_choice !== undefined) body.tool_choice = req.tool_choice;
@@ -72,9 +88,16 @@ export function translateRequest(req: ChatRequest, providerModel: string, stream
   if (stream) {
     body.stream = true;
     // Ask for a final usage-bearing chunk so post-hoc tpm accounting works.
-    body.stream_options = { include_usage: true };
+    // providerOptions.openai.stream_options overrides the default; `null`
+    // removes it (some strict OpenAI-compatible backends reject the field).
+    const override = req.providerOptions?.openai?.stream_options;
+    if (override === undefined) body.stream_options = { include_usage: true };
   }
-  return mergeProviderOptions(body, req, OPENAI_OPTION_NAMESPACES);
+  const merged = mergeProviderOptions(body, req, OPENAI_OPTION_NAMESPACES);
+  // Null opt-out survives the namespace merge above — drop it so JSON null
+  // never reaches the wire.
+  if (merged.stream_options === null) delete merged.stream_options;
+  return merged;
 }
 
 /** OpenAI usage details: cached prompt tokens + reasoning completion tokens. */

@@ -219,4 +219,36 @@ describe("guardrails", () => {
       engine.embed({ model: "e", input: "long enough to trip the length guard here" }),
     ).rejects.toThrow(GuardrailBlockedError);
   });
+
+  test("embed() applies guardrail replacements to the actual input", async () => {
+    let seenBody: unknown;
+    const redact: InputGuardrail = {
+      name: "redact",
+      check: (r) => ({
+        pass: true,
+        replace: {
+          ...r,
+          messages: r.messages.map((m) =>
+            m.role === "user" && typeof m.content === "string"
+              ? { role: m.role, content: m.content.replaceAll("ACME", "[REDACTED]") }
+              : m,
+          ),
+        },
+      }),
+    };
+    const engine = new RoutingEngine(
+      parseConfig({
+        routes: [{ id: "e", provider: "openai", model: "text-embedding-3-small", apiKey: "k" }],
+      }),
+      {
+        fetchImpl: async (_url, init) => {
+          seenBody = JSON.parse(String(init?.body));
+          return jsonResponse(200, { data: [{ index: 0, embedding: [0.1] }], usage: null });
+        },
+        guardrails: { input: [redact] },
+      },
+    );
+    await engine.embed({ model: "e", input: "hello from ACME corp" });
+    expect((seenBody as { input: string }).input).toBe("hello from [REDACTED] corp");
+  });
 });

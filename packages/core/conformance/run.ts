@@ -13,6 +13,7 @@
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import { fileURLToPath } from "node:url";
 import {
   runTranslationCase,
   type TranslationHandlers,
@@ -66,7 +67,8 @@ const handlers: TranslationHandlers = {
   },
 };
 
-const casesDir = join(import.meta.dirname!, "cases");
+// import.meta.dirname needs Node >= 20.11; derive it portably (engines: >=18).
+const casesDir = join(fileURLToPath(new URL(".", import.meta.url)), "cases");
 let total = 0;
 let failed = 0;
 

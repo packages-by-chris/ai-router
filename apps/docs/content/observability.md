@@ -95,7 +95,11 @@ await router.complete(req, {
 });
 ```
 
-Streams also report `ttfbMs` (time to committed first chunk).
+Streams also report `ttfbMs` (time to committed first chunk). For streams the
+summary fires when iteration **ends** — so `usage`/`costUsd` come from the
+final usage-bearing chunk, and a mid-stream failure settles the summary as
+`outcome: "failed"` with the classified error kind. Abandoned streams (caller
+stops iterating early) fire no summary.
 
 ## `stats()` — point-in-time snapshot
 

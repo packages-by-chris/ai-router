@@ -176,9 +176,11 @@ export class RedisStore implements RateLimitStore {
       ]);
       return Math.max(0, Number(raw) || 0);
     } catch (err) {
-      // Budget checks fail open like everything else in this store.
       this.onError?.(err);
-      return 0;
+      // Fail-open reports an empty window (budgets gate nothing). Strict
+      // mode must keep enforcing while Redis is unreachable: report a
+      // saturated window so budget/tpm checks treat the route as exhausted.
+      return this.failOpen ? 0 : Number.MAX_SAFE_INTEGER;
     }
   }
 

@@ -194,15 +194,6 @@ export function translateRequest(
   }
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (req.top_p !== undefined) body.top_p = req.top_p;
-  // Thinking requires temperature/top_p to be unset (Anthropic constraint).
-  if (req.reasoning_effort !== undefined) {
-    body.thinking = {
-      type: "enabled",
-      budget_tokens: ANTHROPIC_THINKING_BUDGETS[req.reasoning_effort],
-    };
-    delete body.temperature;
-    delete body.top_p;
-  }
   if (req.stop !== undefined) body.stop_sequences = Array.isArray(req.stop) ? req.stop : [req.stop];
 
   const sendTools = req.tool_choice !== "none" && req.tools !== undefined && req.tools.length > 0;
@@ -216,6 +207,23 @@ export function translateRequest(
     if (choice === "auto") body.tool_choice = { type: "auto" };
     else if (choice === "required") body.tool_choice = { type: "any" };
     else if (typeof choice === "object") body.tool_choice = { type: "tool", name: choice.function.name };
+  }
+
+  // Thinking requires temperature/top_p to be unset, max_tokens > budget, and
+  // no forced tool_choice (Anthropic rejects the combination). Applied after
+  // tools so the forced-choice downgrade can react to it.
+  if (req.reasoning_effort !== undefined) {
+    const budget = ANTHROPIC_THINKING_BUDGETS[req.reasoning_effort];
+    body.thinking = { type: "enabled", budget_tokens: budget };
+    delete body.temperature;
+    delete body.top_p;
+    const maxTokens = typeof body.max_tokens === "number" ? body.max_tokens : ANTHROPIC_DEFAULT_MAX_TOKENS;
+    // max_tokens must exceed budget_tokens; leave headroom for visible output.
+    if (maxTokens <= budget) body.max_tokens = budget + 1024;
+    const choice = body.tool_choice as { type?: string } | undefined;
+    if (choice !== undefined && choice.type !== "auto") {
+      delete body.tool_choice; // forced tools + thinking -> API 400; degrade to auto
+    }
   }
 
   if (stream) body.stream = true;

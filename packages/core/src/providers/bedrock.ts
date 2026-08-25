@@ -534,7 +534,11 @@ async function signedRequest(
 export class BedrockAdapter implements ProviderAdapter {
   readonly id = "bedrock";
 
-  /** Verbatim passthrough. No requireOk, no translation, no retries. */
+  /**
+   * Verbatim passthrough. No requireOk, no translation, no retries.
+   * SigV4 signs only content-type/host/x-amz-date — do not override
+   * content-type via opts.headers (unsigned mismatch -> signature error).
+   */
   async raw(
     route: NormalizedRoute,
     key: string,
