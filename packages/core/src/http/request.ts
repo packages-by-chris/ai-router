@@ -5,6 +5,13 @@ export type FetchLike = (url: string, init?: RequestInit) => Promise<Response>;
 export interface FetchOptions {
   timeoutMs: number;
   signal?: AbortSignal;
+  /**
+   * Streaming responses: keep the caller-abort relay attached after the
+   * headers arrive so aborting mid-body still cancels the connection.
+   * Without this flag the relay is detached as soon as fetch resolves
+   * (right for one-shot JSON bodies; wrong for SSE streams).
+   */
+  streaming?: boolean;
 }
 
 /**
@@ -36,7 +43,9 @@ export async function fetchWithTimeout(
     return await fetchImpl(url, { ...init, signal: controller.signal });
   } finally {
     clearTimeout(timer);
-    if (opts.signal) opts.signal.removeEventListener("abort", onOuterAbort);
+    // For streams the relay stays attached for the body's lifetime; the
+    // request's own completion/GC releases it.
+    if (!opts.streaming && opts.signal) opts.signal.removeEventListener("abort", onOuterAbort);
   }
 }
 

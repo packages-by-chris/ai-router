@@ -28,6 +28,16 @@ export class ConfigError extends AIRouterError {}
 
 export class UnsupportedProviderError extends AIRouterError {}
 
+/** Thrown when a call exceeds its CallOptions.deadlineMs wall-clock budget. */
+export class DeadlineExceededError extends AIRouterError {
+  readonly deadlineMs: number;
+
+  constructor(deadlineMs: number) {
+    super(`call exceeded its ${deadlineMs}ms deadline`);
+    this.deadlineMs = deadlineMs;
+  }
+}
+
 /** Thrown by the raw escape hatch when a route's rpm budget is exhausted. */
 export class RateLimitedError extends AIRouterError {
   readonly routeId: string;
@@ -68,7 +78,13 @@ export interface AttemptRecord {
   routeId: string;
   provider: string;
   model: string;
-  outcome: "error" | "skipped_rate_limit" | "skipped_budget" | "circuit_open" | "unsupported";
+  outcome:
+    | "error"
+    | "skipped_rate_limit"
+    | "skipped_budget"
+    | "circuit_open"
+    | "unsupported"
+    | "capability_mismatch";
   attempts: number;
   keyIndex?: number;
   kind?: ErrorKind;

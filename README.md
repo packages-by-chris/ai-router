@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.1.0, pre-release. The TypeScript core is feature-complete for
+**Status:** v0.2.0, pre-release. The TypeScript core is feature-complete for
 its scope and covered by mock-based tests plus shared conformance fixtures.
 A Python SDK built against the same fixtures is planned but does not exist
 yet. The package is not yet published to npm.
@@ -39,15 +39,20 @@ yet. The package is not yet published to npm.
 
 - **Multi-provider routing** — one unified request shape, translated per provider in both directions.
 - **Ordered fallback chains** — a request tries route *i*, then *i+1*, … until one succeeds.
-- **Retries with backoff** — exponential, honoring provider `Retry-After`.
-- **API-key rotation** — key pools per route, rotated on key-related errors.
+- **Capability-aware routing** — declare what each model supports (`tools`, `vision`, `structuredOutput`, `contextWindow`, …); incompatible candidates are eliminated before any network I/O.
+- **Cost-aware routing** — `cheapest` and `balanced` strategies from declared pricing, plus per-call `maxCostUsd` constraints.
+- **Latency-aware routing** — `least-latency` EMA plus observed p50/p95/p99 and stream TTF percentiles feeding policies and `maxLatencyMs` constraints.
+- **Quality-aware routing (adaptive foundation)** — applications record outcomes via `recordOutcome()`; `quality-first` routes by measured task quality.
+- **Retries with backoff** — exponential, honoring provider `Retry-After`, clamped to the caller's `deadlineMs`.
+- **API-key rotation** — key pools per route, rotated on key-related errors; rate-limited keys cool down instead of burning attempts.
 - **Rate limiting** — per-route rpm (pre-flight) and tpm (post-hoc) sliding windows.
 - **Spend budgets** — rolling USD caps per route, priced from token usage.
 - **Circuit breaking** — skip failing routes, with graduated cooldowns.
-- **Unified streaming** — committed streams, SSE parsed for every wire format.
+- **Unified streaming** — committed streams, SSE parsed for every wire format; mid-stream aborts tear down the upstream connection.
 - **Tool calling & multimodal input** — translated across providers, including streams.
 - **Guardrails** — input/output validators that block or rewrite traffic.
-- **Observability** — structured lifecycle events, per-attempt hooks, end-of-call summaries with TTFB, usage, and cost.
+- **Observability** — structured lifecycle events, per-attempt hooks, end-of-call summaries with TTFB, usage, and cost, plus a health snapshot (percentiles, error tallies, key cooldowns).
+- **Dry-run routing** — `router.explain()` returns the full decision: candidates, rejections with reasons, estimated cost — without executing anything.
 - **Raw escape hatch** — send anything the unified layer doesn't model straight to the provider.
 
 Under the hood: 6 protocol adapters, 30+ provider presets, zero runtime
@@ -152,9 +157,128 @@ chain start; tail routes still serve if the chosen start fails.
 | `"round-robin"` | Each request rotates the chain start cyclically. |
 | `"weighted"` | Start picked proportionally to route `weight`, then falls back in order. |
 | `"least-latency"` | Fastest-first by per-route latency EMA of observed successes; unobserved routes are sampled first. |
+| `"cheapest"` | Priced routes by estimated per-request USD ascending (input estimate + `max_tokens` at declared prices); unpriced routes follow in config order. Requires `pricing`. |
+| `"balanced"` | Score = 0.5·cost + 0.3·speed + 0.2·reliability, rank-normalized across candidates; unpriced/unobserved signals are neutral. |
+| `"quality-first"` | Orders by application-recorded outcome quality (`recordOutcome`, keyed by `routing.task`); degrades to balanced scoring without data. |
 
-Latency tracking is in-process (per engine instance). See
-[Current limitations](#current-limitations).
+Latency, health, and outcome tracking is in-process (per engine instance).
+See [Current limitations](#current-limitations).
+
+### Capability-aware routing
+
+Declare what each route supports; the router eliminates incompatible
+candidates before execution:
+
+```ts
+const router = new AIRouter({
+  strategy: "cheapest",
+  pricing: { fast: { input: 0.15, output: 0.6 }, smart: { input: 3, output: 15 } },
+  routes: [
+    { id: "fast", provider: "groq", model: "llama-3.3-70b",
+      apiKey: "${GROQ_API_KEY}",
+      capabilities: { tools: true, contextWindow: 128_000 } },
+    { id: "smart", provider: "anthropic", model: "claude-sonnet-4",
+      apiKey: "${ANTHROPIC_API_KEY}",
+      capabilities: { tools: true, vision: true, structuredOutput: true, contextWindow: 200_000 } },
+  ],
+});
+
+// A tools+vision request skips "fast" (no vision) without contacting it:
+await router.complete({
+  model: "fast",
+  messages: [{ role: "user", content: [
+    { type: "text", text: "what's in this image?" },
+    { type: "image_url", image_url: { url: "https://…" } },
+  ]}],
+});
+```
+
+Two elimination paths:
+
+- **Request inference** (metadata-driven): requests carrying tools need a
+  tool-capable route; image parts → `vision`; `json_object` → `json`;
+  `json_schema` → `structuredOutput`; `reasoning_effort` → `reasoning`;
+  oversized inputs vs `contextWindow`; `stream()`/`embed()` → their flags.
+  Only routes that DECLARE capabilities can be excluded — undeclared routes
+  stay eligible so existing configs never change behavior.
+- **Explicit requirements** (hard constraints): `routing.require` rejects any
+  route not declaring the capability true, including undeclared ones.
+
+```ts
+await router.complete(req, {
+  routing: {
+    require: { tools: true },          // hard constraint
+    maxCostUsd: 0.01,                  // estimated-cost ceiling
+    maxLatencyMs: 1_500,               // observed p50 ceiling
+    task: "support-ticket",            // bucket for quality-first routing
+    filter: (route) => !route.id.startsWith("eu-"), // custom, secret-free view
+  },
+});
+```
+
+### Dry-run routing & explanations
+
+```ts
+const decision = await router.explain({
+  model: "smart",
+  messages,
+});
+// {
+//   model: "smart", strategy: "cheapest",
+//   candidates: [
+//     { routeId: "smart", status: "selected",
+//       reasons: ["declared capabilities satisfy the request",
+//                 "estimated cost $0.000012"], ... },
+//     { routeId: "fast", status: "backup", ... },
+//   ],
+// }
+```
+
+Executes nothing, consumes no quota, and never contains credentials.
+
+### Recording outcomes (adaptive foundation)
+
+Applications know quality best — faithfulness for summarization, task
+completion for agents. Record what happened and `quality-first` routing uses
+it:
+
+```ts
+const res = await router.complete(req, { routing: { task: "summarize" } });
+router.recordOutcome({
+  routeId: res.provider === "groq" ? "fast" : "smart", // or track from onFinish
+  task: "summarize",
+  success: true,
+  quality: 0.92,          // your eval, your scale — never invented by the router
+  latencyMs: summary.totalMs,
+  costUsd: res.cost_usd,
+});
+```
+
+Deterministic EMA aggregation per (task, route); no opaque ML. With no data,
+`quality-first` gracefully falls back to balanced cost/speed ordering.
+
+### Call deadlines
+
+```ts
+await router.complete(req, { deadlineMs: 5_000 }); // whole-call wall clock
+```
+
+Backoff sleeps truncate at the deadline, per-attempt HTTP timeouts clamp to
+the remaining budget, and breach throws `DeadlineExceededError` — the
+caller's intended deadline is never overshot across retries and fallbacks.
+For streams it governs acquiring the committed stream, not consuming it.
+
+### Health observability
+
+```ts
+const stats = await router.stats();
+stats.health; // per route: successes/failures, error tallies by kind,
+              // p50/p95/p99 latency, TTFT percentiles, per-key cooldowns
+stats.outcomes; // recorded outcome EMAs per (task, route)
+```
+
+Keys that answered `429` with `Retry-After` cool down automatically and are
+skipped on later calls instead of burning attempts (`key_skip` log events).
 
 ## Reliability model
 
@@ -265,7 +389,7 @@ validated on construction.
 ```ts
 interface RouterConfig {
   routes: ModelRoute[];   // ordered fallback chain
-  strategy?: "fallback" | "round-robin" | "weighted" | "least-latency";
+  strategy?: RoutingStrategy; // fallback | round-robin | weighted | least-latency | cheapest | balanced | quality-first
 }
 ```
 
@@ -277,6 +401,7 @@ Route fields:
 | `provider` | Built-in adapter, preset id, or registered custom id. |
 | `model` | Provider-side model name (deployment name for Azure). |
 | `apiKey` / `apiKeys` | Single key or pool. Merged; rotated on key-related errors. |
+| `capabilities` | Declared profile (`tools`, `vision`, `json`, `structuredOutput`, `streaming`, `reasoning`, `embeddings`, `multimodal`, `longContext`, `audio`, `contextWindow`). Enables pre-flight elimination. Omitted = route always eligible. |
 | `baseUrl`, `headers` | Endpoint override; required for `openai-compatible`. |
 | `apiVersion` | Azure only. |
 | `region`, `project` | Bedrock/Vertex region; GCP project for Vertex. |
@@ -290,7 +415,12 @@ Engine options (second constructor argument): `store`, `fetchImpl`, `sleep`,
 `rng`, `middleware`, `circuitBreaker`, `pricing`, `responseCache`,
 `guardrails`, `onLog`. All optional; all injectable for testing.
 
-Per-request options: `signal` (abort), `onAttempt`, `onFinish`, `onLog`.
+Per-request options: `signal` (abort), `deadlineMs` (wall-clock budget),
+`routing` (`require`, `task`, `maxCostUsd`, `maxLatencyMs`, `filter`),
+`onAttempt`, `onFinish`, `onLog`.
+
+Facade extras: `router.explain(req)` (dry-run), `router.recordOutcome(...)`
+(quality feedback), `router.stats()` (health + outcomes snapshot).
 
 ## Extensibility
 
@@ -365,10 +495,11 @@ latency EMA. Multi-replica circuit breaking is a known limitation, listed below.
 
 ```bash
 npm install          # first
-npm test             # vitest across all packages (~210 cases)
+npm test             # vitest across all packages (~280 cases)
 npm run conformance  # cross-SDK fixture tests
 npm run typecheck    # depends on build
 npm run build        # turbo build (core → redis → apps)
+npm run bench        # routing-overhead microbenchmark (offline, mock fetch)
 ```
 
 Run a single package or file:
@@ -379,10 +510,14 @@ npx vitest run packages/core/tests/engine.test.ts
 ```
 
 Test principles: mock-based unit tests (no snapshots), env vars read at call
-time, and coverage requirements for each failure-recovery layer. Wire-format
-correctness is additionally guarded by conformance fixtures — data-driven
-JSON cases for request translation, response translation, chunk translation,
-and SSE framing, shared across SDKs so implementations cannot drift.
+time, coverage requirements for each failure-recovery layer, and a
+deterministic provider simulator (`tests/simulator.ts`) driving failure
+scenarios — timeouts, rate limits, auth failures, mid-stream deaths, flaky
+recovery. Security tests assert credentials never appear on any error or
+telemetry surface. Wire-format correctness is additionally guarded by
+conformance fixtures — data-driven JSON cases for request translation,
+response translation, chunk translation, and SSE framing, shared across SDKs
+so implementations cannot drift.
 
 Live smoke test against real APIs (manual, cheap models, ~16 tokens):
 
@@ -397,10 +532,14 @@ OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... \
   `fetch`, WebStreams, WebCrypto are assumed from the platform.
   Node ≥ 18, Bun, Deno, edge runtimes.
 - **No hop.** Requests go from your process to the provider directly.
-  Routing overhead is map lookups, a hash for cache keys, and integer math.
+  Routing overhead is map lookups, ring-buffer math, and a hash for cache
+  keys — microbenchmark with a mock fetch shows ~2 µs per request over a
+  direct adapter call (`npm run bench`; environment-dependent, re-measure
+  before quoting).
 - **State footprint.** Per instance: circuit-breaker entries per route, key
-  cursors, a latency EMA per route, and (default store) sliding-window logs
-  sized by traffic within 60 s windows.
+  cursors, latency EMA + fixed-size health rings (128 samples) per route,
+  outcome EMAs, and (default store) sliding-window logs sized by traffic
+  within 60 s windows.
 - **Token accounting.** tpm gating reads recorded usage post-hoc rather than
   reserving estimates pre-flight, so accounting matches provider reports.
   An `estimateTokens` heuristic is exported for callers building their own
@@ -412,11 +551,15 @@ OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... \
 
 Honest list; none are hidden behind marketing:
 
-- **Pre-release software.** v0.1.0, unstable API, not yet on npm, no CI
+- **Pre-release software.** v0.2.0, unstable API, not yet on npm, no CI
   pipeline yet.
-- **In-process intelligence.** Circuit-breaker state, least-latency EMA, and
-  response-cache coordination are per engine instance. Only rate limiting and
-  budgets have a shared-store path today.
+- **In-process intelligence.** Circuit-breaker state, latency/health tracking,
+  key cooldowns, outcome memory, and response-cache coordination are per
+  engine instance. Only rate limiting and budgets have a shared-store path today.
+- **Cost estimates are estimates.** `cheapest`/`balanced` and `maxCostUsd` use
+  a token heuristic plus declared pricing (output assumed ≈ input when
+  `max_tokens` is unset); actual spend accounting from provider usage remains
+  the source of truth for budgets.
 - **Response cache is naive.** Exact-match FNV-1a hashing of the serialized
   request; fine for dedup, not adversarial-key safe. Bring a stronger hash in
   your backing store if that matters.
@@ -434,16 +577,22 @@ Honest list; none are hidden behind marketing:
 
 ## Roadmap
 
-Today a request flows: **routing policy → provider → retry/fallback**, with
-observed latency as the only adaptive signal.
+Today a request flows: **capability/constraint filtering → policy ordering →
+provider → retry/fallback → outcome feedback**, with health, cost, and
+application-recorded quality as adaptive signals.
 
 **Available**
 
 - Adapters: OpenAI, Azure, Anthropic, Gemini, Bedrock (Converse + SigV4),
   Vertex (JWT auth), openai-compatible + 30+ presets
 - Fallback chains, retries with backoff, key-pool rotation, circuit breaker
-  with graduated cooldowns
+  with graduated cooldowns, call deadlines
 - Sliding-window rate limits, USD budgets, tiered pricing, response cache
+- Capability-aware routing (`capabilities` + `routing.require` + inference)
+- Cost/latency/quality policies: `cheapest`, `balanced`, `quality-first`,
+  `maxCostUsd`, `maxLatencyMs`, custom filters
+- Health tracking (percentiles, error tallies, key cooldowns) in `stats()`
+- Dry-run routing via `explain()`; `recordOutcome()` adaptive foundation
 - Guardrails (input/output, block + rewrite), structured `onLog` events,
   call summaries with TTFB
 - Committed streaming, embeddings, multimodal content, tool calling,
@@ -453,16 +602,15 @@ observed latency as the only adaptive signal.
 
 **Planned**
 
-- Python SDK validated against the same conformance fixtures
+- Python SDK validated against the same conformance fixtures (validator port:
+  new strategies + `capabilities` field — see CHANGELOG)
 - CI pipeline and first npm release
 
 **Exploring**
 
-- Routing signals beyond config order and observed latency, moving toward
-  adaptive selection: required request capabilities → provider health →
-  latency → cost → output quality → application-level feedback. Today's
-  `least-latency` strategy (latency EMA) is the only adaptive signal
-  implemented; nothing else should be assumed working.
+- Cross-replica health/circuit sharing alongside the Redis store
+- Throughput (tokens/sec) as a first-class routing signal
+- richer A/B/canary primitives on top of weighted routing
 
 ## Contributing
 

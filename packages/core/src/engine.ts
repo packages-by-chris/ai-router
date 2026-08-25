@@ -13,10 +13,11 @@
  * no fallback.
  */
 
-import type { ModelRoute, RouterConfig } from "./config/schema.js";
+import type { ModelRoute, RouterConfig, RoutingStrategy } from "./config/schema.js";
 import {
   AllRoutesFailedError,
   ConfigError,
+  DeadlineExceededError,
   ProviderError,
   RateLimitedError,
   isKeyRelatedKind,
@@ -38,6 +39,22 @@ import type {
   ProviderAdapter,
   RawRequestOptions,
 } from "./providers/types.js";
+import {
+  capabilityRejection,
+  type CapabilityRequirement,
+  type RouteOp,
+} from "./routing/capabilities.js";
+import { HealthTracker, type RouteHealthSnapshot } from "./routing/health.js";
+import { OutcomeTracker, type OutcomeEvent, type OutcomeStats } from "./routing/outcomes.js";
+export type { OutcomeEvent, OutcomeStats };
+import {
+  balancedScores,
+  estimateCostUsd,
+  orderByScore,
+  priceLookup,
+  medianLatencyOf,
+  successRateOf,
+} from "./routing/order.js";
 import type {
   ChatChunk,
   ChatRequest,
@@ -63,7 +80,8 @@ export type AttemptOutcome =
   | "skipped_rate_limit"
   | "skipped_budget"
   | "circuit_open"
-  | "unsupported";
+  | "unsupported"
+  | "capability_mismatch";
 
 export interface AttemptEvent {
   routeId: string;
@@ -115,7 +133,24 @@ export type LogEvent =
       ts: number;
       routeId: string;
       provider: string;
-      reason: "rate_limit" | "budget" | "circuit_open" | "unsupported";
+      reason:
+        | "rate_limit"
+        | "budget"
+        | "circuit_open"
+        | "unsupported"
+        | "capability"
+        | "constraint"
+        | "filter";
+    }
+  | {
+      type: "key_skip";
+      ts: number;
+      routeId: string;
+      provider: string;
+      /** How many pool keys were on cooldown and passed over. */
+      skipped: number;
+      /** Index of the key actually selected. */
+      keyIndex: number;
     }
   | {
       type: "attempt_retry";
@@ -139,6 +174,88 @@ export interface CallOptions {
   onLog?: (event: LogEvent) => void;
   /** Caller-provided abort signal. Cancels in-flight requests when fired. */
   signal?: AbortSignal;
+  /**
+   * Total wall-clock budget for the WHOLE call (ms): routing, all retries,
+   * key rotations, fallbacks, and time-to-first-token for streams. Backoff
+   * sleeps are truncated at the deadline; per-attempt HTTP timeouts are
+   * clamped to the remaining budget. Exceeding it throws
+   * DeadlineExceededError — the caller's deadline is never overshot.
+   * (For streams the deadline governs acquiring the committed stream, not
+   * consuming it.)
+   */
+  deadlineMs?: number;
+  /** Routing controls evaluated per candidate before execution. */
+  routing?: RoutingOptions;
+}
+
+/**
+ * Secret-free view of a route handed to custom filters and explanations.
+ * Deliberately excludes keys, headers, and endpoint credentials.
+ */
+export interface RouteView {
+  id: string;
+  provider: string;
+  model: string;
+  weight?: number;
+  capabilities?: ModelRoute["capabilities"];
+}
+
+/** One evaluated candidate in a routing explanation. */
+export interface CandidateExplanation {
+  routeId: string;
+  provider: string;
+  model: string;
+  /** "selected" = would serve; "rejected" = eliminated pre-flight; "backup" = next in line. */
+  status: "selected" | "rejected" | "backup";
+  /**
+   * Human-readable reasons: confirmations for the selected candidate,
+   * rejection causes for rejected ones. Never contains credentials.
+   */
+  reasons: string[];
+  /** Estimated per-request USD cost (requires `pricing`). */
+  estimatedCostUsd?: number;
+  /** Observed median total latency (ms), when this route has been used. */
+  observedLatencyMs?: number;
+  /** Observed median time-to-first-chunk (ms), for stream traffic. */
+  observedTtfbMs?: number;
+  /** Composite policy score in [0,1] (balanced/quality-first only). */
+  score?: number;
+}
+
+/** Dry-run routing decision: everything short of an HTTP request. */
+export interface RoutingExplanation {
+  /** The `model` value that was asked for (a route id). */
+  model: string;
+  strategy: RoutingStrategy;
+  /** Task bucket considered (CallOptions.routing.task). */
+  task?: string;
+  candidates: CandidateExplanation[];
+  selected?: CandidateExplanation;
+}
+
+/** Per-call routing policy knobs. All optional, all composable. */
+export interface RoutingOptions {
+  /**
+   * Explicit capability requirements. Combined with requirements inferred
+   * from the request itself (tools → tools-capable route, image parts →
+   * vision, json_schema → structuredOutput, ...). Only routes that DECLARE
+   * capabilities can be eliminated by them.
+   */
+  require?: CapabilityRequirement;
+  /**
+   * Application task type for task-aware quality routing
+   * (strategy "quality-first" + recordOutcome data).
+   */
+  task?: string;
+  /** Eliminate candidates whose ESTIMATED cost exceeds this USD cap. Unpriced routes pass. */
+  maxCostUsd?: number;
+  /** Eliminate candidates whose OBSERVED p50 latency exceeds this ms cap. Unobserved routes pass. */
+  maxLatencyMs?: number;
+  /**
+   * Custom predicate over a secret-free route view. Returning false
+   * eliminates the candidate with reason "excluded by filter".
+   */
+  filter?: (route: RouteView) => boolean;
 }
 
 /** Context passed to middleware before an adapter call. */
@@ -216,7 +333,7 @@ export interface EngineOptions {
 
 /** Observability snapshot of engine-internal routing state. */
 export interface RouterStats {
-  strategy: "fallback" | "round-robin" | "weighted" | "least-latency";
+  strategy: RoutingStrategy;
   circuitBreakers: Array<{
     routeId: string;
     failures: number;
@@ -230,6 +347,10 @@ export interface RouterStats {
   latencies: Record<string, number>;
   /** Per-key limiter totals, when the store supports snapshots. */
   rateLimits: Record<string, number> | null;
+  /** Observed per-route health (percentiles, error tallies, key cooldowns). */
+  health: RouteHealthSnapshot[];
+  /** Application-recorded outcome averages (see recordOutcome). */
+  outcomes: OutcomeStats[];
 }
 
 export class RoutingEngine {
@@ -253,6 +374,10 @@ export class RoutingEngine {
   private readonly latencyEma = new Map<string, number>();
   /** Round-robin chain rotation counter (strategy: "round-robin"). */
   private rrCounter = 0;
+  /** Observed per-route/per-key health (percentiles, tallies, cooldowns). */
+  private readonly health = new HealthTracker();
+  /** Application-recorded outcome memory for quality-aware routing. */
+  private readonly outcomes = new OutcomeTracker();
 
   constructor(readonly config: RouterConfig, opts: EngineOptions = {}) {
     this.store = opts.store ?? new MemoryStore();
@@ -295,7 +420,7 @@ export class RoutingEngine {
    */
   private skipRoute(
     route: NormalizedRoute,
-    outcome: "circuit_open" | "unsupported" | "skipped_budget" | "skipped_rate_limit",
+    outcome: "circuit_open" | "unsupported" | "skipped_budget" | "skipped_rate_limit" | "capability_mismatch",
     message: string,
     attempts: AttemptRecord[],
     notify: Notify,
@@ -317,9 +442,11 @@ export class RoutingEngine {
           ? "circuit_open"
           : outcome === "unsupported"
             ? "unsupported"
-            : outcome === "skipped_budget"
-              ? "budget"
-              : "rate_limit",
+            : outcome === "capability_mismatch"
+              ? "capability"
+              : outcome === "skipped_budget"
+                ? "budget"
+                : "rate_limit",
     });
   }
 
@@ -329,6 +456,10 @@ export class RoutingEngine {
     const onFinish = opts.onFinish;
     const signal = opts.signal;
     if (signal?.aborted) throw abortFrom(signal);
+    const deadlineAt = opts.deadlineMs !== undefined ? startedAt + opts.deadlineMs : undefined;
+    const { deadlineMs } = opts;
+    const routing = opts.routing;
+    const inputTokens = estimateTokens(req);
 
     const attempts: AttemptRecord[] = [];
 
@@ -377,10 +508,17 @@ export class RoutingEngine {
       }
       let served: { route: NormalizedRoute; value: ChatResponse; tries: number } | undefined;
 
-      for (const route of this.resolveChain(req.model)) {
+      for (const route of this.resolveChain(req, "complete", routing?.task)) {
         if (signal?.aborted) throw abortFrom(signal);
+        this.assertDeadline(deadlineAt, deadlineMs);
         if (this.cbIsOpen(route.id)) {
           this.skipRoute(route, "circuit_open", "circuit breaker open", attempts, notify, opts.onLog);
+          continue;
+        }
+
+        const rejection = this.routingRejection(route, req, "complete", inputTokens, routing);
+        if (rejection) {
+          this.skipRoute(route, "capability_mismatch", rejection.message, attempts, notify, opts.onLog);
           continue;
         }
 
@@ -406,7 +544,10 @@ export class RoutingEngine {
         const timing = { latencyMs: 0 };
         const result = await this.attemptWithRetry(
           route, notify, signal,
-          (key, tries, keyIndex) => this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify, timing),
+          (key, tries, keyIndex) =>
+            this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify, timing,
+              deadlineAt),
+          deadlineAt, deadlineMs,
           opts.onLog,
         );
         if (result.ok) {
@@ -474,7 +615,7 @@ export class RoutingEngine {
         outcome: "failed",
         totalMs: Date.now() - startedAt,
         attempts: totalTries(attempts, 0),
-        kind: err instanceof ProviderError ? err.kind : undefined,
+        kind: failureKind(err),
       });
       throw err;
     }
@@ -491,6 +632,10 @@ export class RoutingEngine {
     const onFinish = opts.onFinish;
     const signal = opts.signal;
     if (signal?.aborted) throw abortFrom(signal);
+    const deadlineAt = opts.deadlineMs !== undefined ? startedAt + opts.deadlineMs : undefined;
+    const { deadlineMs } = opts;
+    const routing = opts.routing;
+    const inputTokens = estimateTokens(req);
     const attempts: AttemptRecord[] = [];
 
     try {
@@ -511,10 +656,17 @@ export class RoutingEngine {
         }
         throw err;
       }
-      for (const route of this.resolveChain(req.model)) {
+      for (const route of this.resolveChain(req, "stream", routing?.task)) {
         if (signal?.aborted) throw abortFrom(signal);
+        this.assertDeadline(deadlineAt, deadlineMs);
         if (this.cbIsOpen(route.id)) {
           this.skipRoute(route, "circuit_open", "circuit breaker open", attempts, notify, opts.onLog);
+          continue;
+        }
+
+        const rejection = this.routingRejection(route, req, "stream", inputTokens, routing);
+        if (rejection) {
+          this.skipRoute(route, "capability_mismatch", rejection.message, attempts, notify, opts.onLog);
           continue;
         }
 
@@ -540,7 +692,10 @@ export class RoutingEngine {
         const timing = { latencyMs: 0 };
         const result = await this.attemptWithRetry(
           route, notify, signal,
-          (key, tries, keyIndex) => this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify, timing),
+          (key, tries, keyIndex) =>
+            this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify, timing,
+              deadlineAt),
+          deadlineAt, deadlineMs,
           opts.onLog,
         );
         if (result.ok) {
@@ -566,7 +721,7 @@ export class RoutingEngine {
         outcome: "failed",
         totalMs: Date.now() - startedAt,
         attempts: totalTries(attempts, 0),
-        kind: err instanceof ProviderError ? err.kind : undefined,
+        kind: failureKind(err),
       });
       throw err;
     }
@@ -583,6 +738,9 @@ export class RoutingEngine {
     const onFinish = opts.onFinish;
     const signal = opts.signal;
     if (signal?.aborted) throw abortFrom(signal);
+    const deadlineAt = opts.deadlineMs !== undefined ? startedAt + opts.deadlineMs : undefined;
+    const { deadlineMs } = opts;
+    const routing = opts.routing;
     const attempts: AttemptRecord[] = [];
 
     try {
@@ -597,6 +755,7 @@ export class RoutingEngine {
           { role: "user", content: Array.isArray(req.input) ? req.input.join("\n") : req.input },
         ],
       };
+      const inputTokens = estimateTokens(probe);
       try {
         const guarded = await runGuardrails("input", this.guardrails?.input, probe);
         if (guarded !== probe) {
@@ -617,10 +776,17 @@ export class RoutingEngine {
       }
       let served: { route: NormalizedRoute; value: EmbeddingResponse; tries: number } | undefined;
 
-      for (const route of this.resolveChain(req.model)) {
+      for (const route of this.resolveChain(probe, "embed", routing?.task)) {
         if (signal?.aborted) throw abortFrom(signal);
+        this.assertDeadline(deadlineAt, deadlineMs);
         if (this.cbIsOpen(route.id)) {
           this.skipRoute(route, "circuit_open", "circuit breaker open", attempts, notify, opts.onLog);
+          continue;
+        }
+
+        const rejection = this.routingRejection(route, probe, "embed", inputTokens, routing);
+        if (rejection) {
+          this.skipRoute(route, "capability_mismatch", rejection.message, attempts, notify, opts.onLog);
           continue;
         }
 
@@ -646,7 +812,8 @@ export class RoutingEngine {
         }
 
         const result = await this.attemptWithRetry(route, notify, signal, (key, tries, keyIndex) =>
-          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify), opts.onLog,
+          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify, deadlineAt),
+          deadlineAt, deadlineMs, opts.onLog,
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -681,7 +848,7 @@ export class RoutingEngine {
         outcome: "failed",
         totalMs: Date.now() - startedAt,
         attempts: totalTries(attempts, 0),
-        kind: err instanceof ProviderError ? err.kind : undefined,
+        kind: failureKind(err),
       });
       throw err;
     }
@@ -719,7 +886,7 @@ export class RoutingEngine {
     return adapter.raw(normalized, key, opts, { fetchImpl: this.fetchImpl, signal: opts.signal });
   }
 
-  /** Snapshot of circuit-breaker state, key cursors, and limiter totals. */
+  /** Snapshot of circuit-breaker state, key cursors, limiter totals, health. */
   async stats(): Promise<RouterStats> {
     const rateLimits = this.store.snapshot
       ? await this.store.snapshot()
@@ -736,10 +903,233 @@ export class RoutingEngine {
       keyCursors: Object.fromEntries(this.keyCursor),
       latencies: Object.fromEntries(this.latencyEma),
       rateLimits,
+      health: this.health.snapshot(),
+      outcomes: this.outcomes.snapshot(),
+    };
+  }
+
+  /**
+   * Record an application-observed outcome for a completed call — the input
+   * to quality-aware ("quality-first") and future adaptive routing.
+   * Applications define quality; the router only aggregates it (EMA per
+   * task+route). Unknown route ids are ignored, never thrown.
+   */
+  recordOutcome(event: OutcomeEvent): void {
+    if (!this.config.routes.some((r) => r.id === event.routeId)) return;
+    this.outcomes.record(event);
+  }
+
+  /**
+   * Dry-run routing: evaluate the full candidate pipeline (strategy order,
+   * capability gate, filter, constraints, circuit state, budgets) WITHOUT
+   * executing anything and WITHOUT consuming rate-limit quota. The first
+   * candidate that passes every read-only check is "selected"; note the
+   * real call may still differ if rpm limits trip or providers fail.
+   */
+  async explain(req: ChatRequest, opts: Pick<CallOptions, "routing"> = {}): Promise<RoutingExplanation> {
+    const strategy = this.config.strategy ?? "fallback";
+    const task = opts.routing?.task;
+    const chain = this.resolveChain(req, "complete", task);
+    const inputTokens = estimateTokens(req);
+    const candidates: CandidateExplanation[] = [];
+    let selected: CandidateExplanation | undefined;
+
+    for (const route of chain) {
+      const price = priceLookup(this.pricing, route.id, route.model);
+      const estCost = price ? estimateCostUsd(price, inputTokens, req.max_tokens) : undefined;
+      const healthSnap = this.health.snapshot().find((h) => h.routeId === route.id);
+      const entry: CandidateExplanation = {
+        routeId: route.id,
+        provider: route.provider,
+        model: route.model,
+        status: "backup",
+        reasons: [],
+        ...(estCost !== undefined ? { estimatedCostUsd: estCost } : {}),
+        ...(healthSnap?.p50LatencyMs !== undefined ? { observedLatencyMs: healthSnap.p50LatencyMs } : {}),
+        ...(healthSnap?.p50TtfbMs !== undefined ? { observedTtfbMs: healthSnap.p50TtfbMs } : {}),
+      };
+      candidates.push(entry);
+
+      // Once a candidate is selected the rest stay unevaluated backups.
+      if (selected) continue;
+
+      const reject = (reason: string): void => {
+        entry.status = "rejected";
+        entry.reasons.push(reason);
+      };
+
+      if (this.cbIsOpen(route.id)) {
+        reject("circuit breaker open");
+        continue;
+      }
+      const rejection = this.routingRejection(route, req, "complete", inputTokens, opts.routing);
+      if (rejection) {
+        reject(rejection.message);
+        continue;
+      }
+      try {
+        getAdapter(route.adapterId ?? route.provider);
+      } catch (err) {
+        reject(errorMessage(err));
+        continue;
+      }
+
+      if (route.budget && this.store.used) {
+        try {
+          const used = await this.windowTotal(`${route.id}:usd`, route.budget.windowMs ?? WINDOW_MS);
+          if (used >= Math.round(route.budget.usd * 1e6)) {
+            reject("usd spend budget exhausted");
+            continue;
+          }
+        } catch {
+          // store read failure fails open, same as execution
+        }
+      }
+      if (
+        route.limits.tpm !== undefined &&
+        (await this.windowTotal(`${route.id}:tpm`, WINDOW_MS)) >= route.limits.tpm
+      ) {
+        reject("token budget exhausted pre-flight");
+        continue;
+      }
+
+      // Eligible — first one wins.
+      entry.status = "selected";
+      if (route.capabilities) {
+        entry.reasons.push("declared capabilities satisfy the request");
+      }
+      if (healthSnap && healthSnap.successes + healthSnap.failures > 0) {
+        entry.reasons.push(`healthy (${Math.round(healthSnap.successRate * 100)}% recent success)`);
+      }
+      if (estCost !== undefined) {
+        entry.reasons.push(`estimated cost $${estCost}`);
+      }
+      if (healthSnap?.p50LatencyMs !== undefined) {
+        entry.reasons.push(`observed p50 ${healthSnap.p50LatencyMs}ms`);
+      }
+      if (entry.reasons.length === 0) entry.reasons.push("highest-priority eligible candidate");
+      selected = entry;
+    }
+
+    return {
+      model: req.model,
+      strategy,
+      ...(task !== undefined ? { task } : {}),
+      candidates,
+      ...(selected ? { selected } : {}),
     };
   }
 
   // ------------------------------------------------------------------ internals
+
+  /** Secret-free view handed to custom filters and explanations. */
+  private routeView(route: NormalizedRoute): RouteView {
+    return {
+      id: route.id,
+      provider: route.provider,
+      model: route.model,
+      ...(route.weight !== undefined ? { weight: route.weight } : {}),
+      ...(route.capabilities !== undefined ? { capabilities: route.capabilities } : {}),
+    };
+  }
+
+  /**
+   * Per-candidate pre-execution gate shared by complete/stream/embed and
+   * explain(): capability requirements (explicit + request-inferred), custom
+   * filter, cost and latency constraints. Returns why the candidate must be
+   * skipped, or null when eligible.
+   */
+  private routingRejection(
+    route: NormalizedRoute,
+    req: ChatRequest,
+    op: RouteOp,
+    inputTokens: number,
+    routing: RoutingOptions | undefined,
+  ): { message: string; kind: "capability" | "constraint" | "filter" } | null {
+    const capReason = capabilityRejection(
+      route.capabilities,
+      req,
+      op,
+      routing?.require,
+      inputTokens,
+    );
+    if (capReason) return { message: capReason, kind: "capability" };
+
+    if (routing?.filter && !routing.filter(this.routeView(route))) {
+      return { message: "excluded by custom filter", kind: "filter" };
+    }
+
+    if (routing?.maxCostUsd !== undefined) {
+      const price = priceLookup(this.pricing, route.id, route.model);
+      if (price) {
+        const est = estimateCostUsd(price, inputTokens, req.max_tokens);
+        if (est > routing.maxCostUsd) {
+          return {
+            message: `estimated cost $${est} exceeds maxCostUsd $${routing.maxCostUsd}`,
+            kind: "constraint",
+          };
+        }
+      }
+    }
+
+    if (routing?.maxLatencyMs !== undefined) {
+      const observed = this.health.medianLatency(route.id);
+      if (observed !== undefined && observed > routing.maxLatencyMs) {
+        return {
+          message: `observed p50 latency ${observed}ms exceeds maxLatencyMs ${routing.maxLatencyMs}`,
+          kind: "constraint",
+        };
+      }
+    }
+
+    return null;
+  }
+
+  /** Throw when the call's wall-clock deadline has passed. */
+  private assertDeadline(deadlineAt: number | undefined, deadlineMs: number | undefined): void {
+    if (deadlineAt !== undefined && Date.now() >= deadlineAt) {
+      throw new DeadlineExceededError(deadlineMs ?? 0);
+    }
+  }
+
+  /**
+   * Compose caller cancellation + deadline into ONE signal for a single
+   * attempt. Fixes two things at once:
+   *   - caller abort now cancels in-flight STREAM bodies (previously only
+   *     the HTTP headers were cancellable once fetch resolved);
+   *   - deadline breaches abort the underlying request instead of letting
+   *     it run to the provider's own timeout.
+   * dispose() MUST run when the attempt's response/stream is finished.
+   */
+  private linkAttempt(caller: AbortSignal | undefined, deadlineAt: number | undefined): {
+    signal: AbortSignal;
+    dispose(): void;
+  } {
+    const ctrl = new AbortController();
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const abortFromCaller = () =>
+      ctrl.abort(caller?.reason ?? new DOMException("This operation was aborted", "AbortError"));
+    if (caller?.aborted) abortFromCaller();
+    else if (caller) caller.addEventListener("abort", abortFromCaller, { once: true });
+    if (deadlineAt !== undefined) {
+      const remaining = deadlineAt - Date.now();
+      if (remaining <= 0) {
+        ctrl.abort(new DOMException("deadline exceeded", "TimeoutError"));
+      } else {
+        timer = setTimeout(
+          () => ctrl.abort(new DOMException("deadline exceeded", "TimeoutError")),
+          remaining,
+        );
+      }
+    }
+    return {
+      signal: ctrl.signal,
+      dispose() {
+        if (timer !== undefined) clearTimeout(timer);
+        caller?.removeEventListener("abort", abortFromCaller);
+      },
+    };
+  }
 
   private async completeOnce(
     adapter: ProviderAdapter,
@@ -751,18 +1141,32 @@ export class RoutingEngine {
     signal: AbortSignal | undefined,
     notify: Notify,
     timing: { latencyMs: number },
+    deadlineAt: number | undefined,
   ): Promise<ChatResponse> {
     await this.fireBeforeRequest(route, req, tries);
-    const t0 = Date.now();
-    const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl, signal });
-    timing.latencyMs = Date.now() - t0;
-    this.recordLatency(route.id, timing.latencyMs);
-    await this.fireAfterResponse(route, req, tries, value);
-    notify({
-      routeId: route.id, provider: route.provider, model: route.model,
-      outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
-    });
-    return value;
+    // Clamp the attempt to whatever budget remains; a shared controller also
+    // keeps caller cancellation live for the whole body read.
+    const link = this.linkAttempt(signal, deadlineAt);
+    try {
+      const t0 = Date.now();
+      const value = await adapter.complete(
+        { ...route, timeoutMs: this.effectiveTimeoutMs(route, deadlineAt) },
+        key,
+        req,
+        { fetchImpl: this.fetchImpl, signal: link.signal },
+      );
+      timing.latencyMs = Date.now() - t0;
+      this.recordLatency(route.id, timing.latencyMs);
+      this.health.recordSuccess(route.id, { latencyMs: timing.latencyMs });
+      await this.fireAfterResponse(route, req, tries, value);
+      notify({
+        routeId: route.id, provider: route.provider, model: route.model,
+        outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
+      });
+      return value;
+    } finally {
+      link.dispose();
+    }
   }
 
   private async streamCommit(
@@ -775,39 +1179,59 @@ export class RoutingEngine {
     signal: AbortSignal | undefined,
     notify: Notify,
     timing: { latencyMs: number },
+    deadlineAt: number | undefined,
   ): Promise<{ iterator: AsyncIterator<ChatChunk>; first: ChatChunk }> {
     await this.fireBeforeRequest(route, req, tries);
-    const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl, signal });
-    const iterator = iterable[Symbol.asyncIterator]();
-    const t0 = Date.now();
-    const first = route.streamIdleTimeoutMs
-      ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
-      : await iterator.next();
-    if (first.done) {
+    // The link outlives this method for streams: it must stay armed so a
+    // caller abort (or deadline) cancels the upstream HTTP body mid-stream.
+    // Ownership transfers to the disposing wrapper below.
+    const link = this.linkAttempt(signal, deadlineAt);
+    let iterator: AsyncIterator<ChatChunk> | undefined;
+    try {
+      const iterable = await adapter.stream(
+        { ...route, timeoutMs: this.effectiveTimeoutMs(route, deadlineAt) },
+        key,
+        req,
+        { fetchImpl: this.fetchImpl, signal: link.signal },
+      );
+      iterator = iterable[Symbol.asyncIterator]();
+      const t0 = Date.now();
+      const first = route.streamIdleTimeoutMs
+        ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
+        : await iterator.next();
       timing.latencyMs = Date.now() - t0;
+      if (first.done) {
+        this.recordLatency(route.id, timing.latencyMs);
+        this.health.recordSuccess(route.id, { latencyMs: timing.latencyMs });
+        notify({
+          routeId: route.id, provider: route.provider, model: route.model,
+          outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
+        });
+        return { iterator: disposeOnEnd(iterator, link.dispose), first: emptyChunk() };
+      }
       this.recordLatency(route.id, timing.latencyMs);
+      this.health.recordSuccess(route.id, { ttfbMs: timing.latencyMs });
       notify({
         routeId: route.id, provider: route.provider, model: route.model,
         outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
       });
-      return { iterator, first: emptyChunk() };
+      // Fire afterResponse with a synthetic response from first chunk metadata.
+      await this.fireAfterResponse(route, req, tries, {
+        id: first.value.id,
+        model: first.value.model,
+        provider: first.value.provider,
+        created: 0,
+        choices: [{ index: 0, message: { role: first.value.delta.role ?? "assistant", content: first.value.delta.content ?? null }, finish_reason: null }],
+        usage: first.value.usage ?? null,
+      });
+      return { iterator: disposeOnEnd(iterator, link.dispose), first: first.value };
+    } catch (err) {
+      // Pre-commit failure (or first-chunk timeout): tear everything down —
+      // the engine may fall back to another route.
+      if (iterator) void Promise.resolve(iterator.return?.()).catch(() => {});
+      link.dispose();
+      throw err;
     }
-    timing.latencyMs = Date.now() - t0;
-    this.recordLatency(route.id, timing.latencyMs);
-    notify({
-      routeId: route.id, provider: route.provider, model: route.model,
-      outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
-    });
-    // Fire afterResponse with a synthetic response from first chunk metadata.
-    await this.fireAfterResponse(route, req, tries, {
-      id: first.value.id,
-      model: first.value.model,
-      provider: first.value.provider,
-      created: 0,
-      choices: [{ index: 0, message: { role: first.value.delta.role ?? "assistant", content: first.value.delta.content ?? null }, finish_reason: null }],
-      usage: first.value.usage ?? null,
-    });
-    return { iterator, first: first.value };
   }
 
   private async embedOnce(
@@ -819,26 +1243,47 @@ export class RoutingEngine {
     req: EmbeddingRequest,
     signal: AbortSignal | undefined,
     notify: Notify,
+    deadlineAt: number | undefined,
   ): Promise<EmbeddingResponse> {
     await this.fireBeforeRequest(route, { model: req.model, messages: [] }, tries);
-    const value = await adapter.embed!(route, key, req, { fetchImpl: this.fetchImpl, signal });
-    notify({
-      routeId: route.id, provider: route.provider, model: route.model,
-      outcome: "ok", attempts: tries, keyIndex,
-    });
-    return value;
+    const link = this.linkAttempt(signal, deadlineAt);
+    try {
+      const value = await adapter.embed!(
+        { ...route, timeoutMs: this.effectiveTimeoutMs(route, deadlineAt) },
+        key,
+        req,
+        { fetchImpl: this.fetchImpl, signal: link.signal },
+      );
+      notify({
+        routeId: route.id, provider: route.provider, model: route.model,
+        outcome: "ok", attempts: tries, keyIndex,
+      });
+      return value;
+    } finally {
+      link.dispose();
+    }
+  }
+
+  /** Per-attempt HTTP timeout clamped to the caller's remaining deadline. */
+  private effectiveTimeoutMs(route: NormalizedRoute, deadlineAt: number | undefined): number {
+    if (deadlineAt === undefined) return route.timeoutMs;
+    const remaining = deadlineAt - Date.now();
+    return Math.max(1, Math.min(route.timeoutMs, remaining));
   }
 
   /**
    * Shared retry/rotate loop. `op` performs one attempt (hooks + adapter call
    * + ok notification). Caller cancellation inside `op` or between attempts
-   * propagates immediately — never retried, never falls back.
+   * propagates immediately — never retried, never falls back. A breached
+   * deadline throws DeadlineExceededError for the whole call.
    */
   private async attemptWithRetry<T>(
     route: NormalizedRoute,
     notify: Notify,
     signal: AbortSignal | undefined,
     op: (key: string, tries: number, keyIndex: number) => Promise<T>,
+    deadlineAt?: number,
+    deadlineMs?: number,
     callOnLog?: (event: LogEvent) => void,
   ): Promise<{ ok: true; value: T; tries: number } | { ok: false; attempt: AttemptRecord }> {
     const maxRetries = route.maxRetries;
@@ -851,20 +1296,41 @@ export class RoutingEngine {
 
     for (;;) {
       if (signal?.aborted) throw abortFrom(signal);
-      const key = route.keyPool[keyIndex % poolSize] as string;
+      this.assertDeadline(deadlineAt, deadlineMs);
+      // Skip keys known to be cooling down (rate-limit/auth Retry-After) so
+      // we don't burn attempts on keys that just told us to back off.
+      let effectiveIndex = keyIndex % poolSize;
+      const picked = this.health.pickKey(route.id, effectiveIndex, poolSize);
+      if (picked !== null && picked !== effectiveIndex) {
+        const skipped = (picked - effectiveIndex + poolSize) % poolSize;
+        this.emitLog(callOnLog, {
+          type: "key_skip",
+          ts: Date.now(),
+          routeId: route.id,
+          provider: route.provider,
+          skipped,
+          keyIndex: picked,
+        });
+        effectiveIndex = picked;
+      }
+      const key = route.keyPool[effectiveIndex] as string;
       tries++;
       try {
-        const value = await op(key, tries, keyIndex);
+        const value = await op(key, tries, effectiveIndex);
         return { ok: true, value, tries };
       } catch (err) {
         if (signal?.aborted) throw err;
         last = toProviderError(err, route.provider);
+        this.health.recordFailure(route.id, last.kind, {
+          keyIndex: effectiveIndex,
+          ...(last.retryAfterMs !== undefined ? { retryAfterMs: last.retryAfterMs } : {}),
+        });
         // Rate limit / auth / permission: try the next key immediately.
         // If all keys exhausted (or only one key), fall back to next route.
         if (isKeyRelatedKind(last.kind)) {
           keysExhausted++;
           if (keysExhausted >= poolSize) break;
-          const prevKeyIndex = keyIndex;
+          const prevKeyIndex = effectiveIndex;
           keyIndex++;
           notify({
             routeId: route.id, provider: route.provider, model: route.model,
@@ -878,10 +1344,14 @@ export class RoutingEngine {
           retries++;
           notify({
             routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex,
+            outcome: "retry", attempts: tries, keyIndex: effectiveIndex,
             kind: last.kind, message: last.message,
           });
-          const delayMs = this.backoffMs(retries, last.retryAfterMs);
+          let delayMs = this.backoffMs(retries, last.retryAfterMs);
+          // Never sleep past the caller's deadline.
+          if (deadlineAt !== undefined) {
+            delayMs = Math.max(0, Math.min(delayMs, deadlineAt - Date.now()));
+          }
           this.emitLog(callOnLog, {
             type: "attempt_retry",
             ts: Date.now(),
@@ -970,7 +1440,7 @@ export class RoutingEngine {
         routeId: route.id,
         provider: route.provider,
         attempts: summary.attempts,
-        kind: err instanceof ProviderError ? err.kind : undefined,
+        kind: failureKind(err),
       });
       throw err;
     }
@@ -998,11 +1468,17 @@ export class RoutingEngine {
     return Promise.race([iterator.next(), timeout]).finally(() => clearTimeout(timer!));
   }
 
-  private resolveChain(model: string): NormalizedRoute[] {
-    const index = this.config.routes.findIndex((r) => r.id === model);
+  /**
+   * Candidate slice for a request: routes from the requested id onward,
+   * reordered by the configured strategy. Ordering never removes candidates
+   * (elimination happens in the per-route gates); it only decides where the
+   * chain starts / how it is ranked.
+   */
+  private resolveChain(req: ChatRequest, op: RouteOp, task?: string): NormalizedRoute[] {
+    const index = this.config.routes.findIndex((r) => r.id === req.model);
     if (index === -1) {
       const known = this.config.routes.map((r) => r.id).join(", ");
-      throw new ConfigError(`unknown model "${model}" (known route ids: ${known})`);
+      throw new ConfigError(`unknown model "${req.model}" (known route ids: ${known})`);
     }
     const chain = this.config.routes.slice(index).map(normalizeRoute);
     const strategy = this.config.strategy;
@@ -1039,8 +1515,54 @@ export class RoutingEngine {
         return a.i - b.i;
       });
       for (let i = 0; i < withIdx.length; i++) chain[i] = withIdx[i]!.route;
+    } else if (
+      (strategy === "cheapest" || strategy === "balanced" || strategy === "quality-first") &&
+      chain.length > 1
+    ) {
+      const order = this.policyOrder(chain, req, strategy, task);
+      for (let i = 0; i < order.length; i++) chain[i] = order[i]!;
     }
     return chain;
+  }
+
+  /** Cost/quality-aware ordering for cheapest/balanced/quality-first. */
+  private policyOrder(
+    chain: NormalizedRoute[],
+    req: ChatRequest,
+    strategy: RoutingStrategy,
+    task?: string,
+  ): NormalizedRoute[] {
+    const inputTokens = estimateTokens(req);
+    const estCosts = chain.map((route) => {
+      const price = priceLookup(this.pricing, route.id, route.model);
+      return price ? estimateCostUsd(price, inputTokens, req.max_tokens) : undefined;
+    });
+    const healthSnapshots = this.health.snapshot();
+    const latencies = chain.map((route) =>
+      medianLatencyOf(healthSnapshots, route.id) ?? this.latencyEma.get(route.id),
+    );
+    const successRates = chain.map((route) => successRateOf(healthSnapshots, route.id));
+
+    if (strategy === "cheapest") {
+      // Priced candidates by ascending estimate; unpriced follow in config order.
+      const idx = chain.map((_, i) => i);
+      idx.sort((a, b) => {
+        const ca = estCosts[a];
+        const cb = estCosts[b];
+        if (ca !== undefined && cb !== undefined) return ca - cb;
+        if (ca !== undefined) return -1;
+        if (cb !== undefined) return 1;
+        return a - b;
+      });
+      return idx.map((i) => chain[i]!);
+    }
+
+    const qualities =
+      strategy === "balanced"
+        ? chain.map(() => undefined)
+        : chain.map((route) => this.outcomes.quality(task, route.id));
+    const scores = balancedScores({ estCosts, latencies, successRates, qualities });
+    return orderByScore(scores).map((i) => chain[i]!);
   }
 
   /** Exponential-moving-average success latency per route (alpha 0.3). */
@@ -1293,4 +1815,34 @@ export function computeCost(usage: Usage, price: TokenPrice): number {
 
 function abortFrom(signal: AbortSignal): unknown {
   return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
+}
+
+/** Classified kind for settlement summaries; deadlines report as timeouts. */
+function failureKind(err: unknown): ErrorKind | undefined {
+  if (err instanceof ProviderError) return err.kind;
+  if (err instanceof DeadlineExceededError) return "timeout";
+  return undefined;
+}
+
+/**
+ * Iterator wrapper that releases an attempt's abort-link when the stream
+ * ends — normally, on error, or when the caller abandons it (break/return).
+ * Also propagates close() to the upstream iterator.
+ */
+async function* disposeOnEnd<T>(
+  inner: AsyncIterator<T>,
+  dispose: () => void,
+): AsyncGenerator<T> {
+  try {
+    for (;;) {
+      const result = await inner.next();
+      if (result.done) {
+        dispose();
+        return result.value;
+      }
+      yield result.value;
+    }
+  } finally {
+    dispose();
+  }
 }

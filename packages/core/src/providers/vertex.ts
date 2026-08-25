@@ -238,6 +238,7 @@ export class VertexAdapter implements ProviderAdapter {
     method: "generateContent" | "streamGenerateContent" | "predict",
     body: unknown,
     ctx: AdapterContext,
+    streaming = false,
   ): Promise<Response> {
     const init: RequestInit = {
       method: "POST",
@@ -248,6 +249,7 @@ export class VertexAdapter implements ProviderAdapter {
       return await fetchWithTimeout(ctx.fetchImpl, vertexUrl(route, method), init, {
         timeoutMs: route.timeoutMs,
         signal: ctx.signal,
+        streaming,
       });
     } catch (err) {
       throw toNetworkError("vertex", err);
@@ -282,6 +284,7 @@ export class VertexAdapter implements ProviderAdapter {
       route, key, "streamGenerateContent",
       translateGeminiRequest(req, route.model, true),
       ctx,
+      true, // streaming: keep the abort relay attached for the body lifetime
     );
     await requireOk(resp, "vertex");
     const body = resp.body;

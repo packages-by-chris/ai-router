@@ -7,10 +7,14 @@ export type {
   AttemptOutcome,
   CallOptions,
   CallSummaryEvent,
+  CandidateExplanation,
   EngineOptions,
   LogEvent,
   Middleware,
   RequestContext,
+  RouteView,
+  RoutingExplanation,
+  RoutingOptions,
   RouterStats,
 } from "./engine.js";
 export { parseConfig } from "./config/parse.js";
@@ -20,12 +24,14 @@ export type {
   ModelRoute,
   ProviderId,
   RouterConfig,
+  RoutingStrategy,
 } from "./config/schema.js";
 export { PROVIDER_IDS } from "./config/schema.js";
 export {
   AIRouterError,
   AllRoutesFailedError,
   ConfigError,
+  DeadlineExceededError,
   ProviderError,
   RateLimitedError,
   UnsupportedProviderError,
@@ -34,6 +40,19 @@ export {
   isRetryableKind,
 } from "./errors.js";
 export type { AttemptRecord, ErrorKind, ProviderErrorOptions } from "./errors.js";
+export {
+  capabilityRejection,
+  inferredRequirements,
+} from "./routing/capabilities.js";
+export type {
+  CapabilityRequirement,
+  ModelCapabilities,
+  RouteOp,
+} from "./routing/capabilities.js";
+export { HealthTracker, KEY_COOLDOWN_CAP_MS } from "./routing/health.js";
+export type { KeyHealth, RouteHealthSnapshot } from "./routing/health.js";
+export type { OutcomeEvent, OutcomeStats } from "./routing/outcomes.js";
+export { estimateCostUsd } from "./routing/order.js";
 export {
   GuardrailBlockedError,
   runGuardrails,

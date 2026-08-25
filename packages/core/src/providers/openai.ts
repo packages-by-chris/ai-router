@@ -262,9 +262,10 @@ export class OpenAIAdapter implements ProviderAdapter {
     ctx: AdapterContext,
     timeoutMs: number,
     signal?: AbortSignal,
+    streaming = false,
   ): Promise<Response> {
     try {
-      return await fetchWithTimeout(ctx.fetchImpl, url, init, { timeoutMs, signal });
+      return await fetchWithTimeout(ctx.fetchImpl, url, init, { timeoutMs, signal, streaming });
     } catch (err) {
       throw toNetworkError(label, err);
     }
@@ -344,6 +345,7 @@ export class OpenAIAdapter implements ProviderAdapter {
       ctx,
       route.timeoutMs,
       ctx.signal,
+      true, // streaming: keep the abort relay attached for the body lifetime
     );
     await requireOk(resp, label);
     const body = resp.body;
@@ -357,6 +359,19 @@ export class OpenAIAdapter implements ProviderAdapter {
           json = JSON.parse(data);
         } catch {
           continue; // tolerate keep-alive noise
+        }
+        // In-band error objects (OpenRouter/OpenAI-compatible backends emit
+        // these mid-stream): surface them post-commit instead of dropping
+        // them as unparseable frames.
+        const errObj = (json as Record<string, unknown>).error;
+        if (errObj && typeof errObj === "object" && !Array.isArray(json)) {
+          const msg =
+            (errObj as Record<string, unknown>).message !== undefined
+              ? String((errObj as Record<string, unknown>).message)
+              : "mid-stream error";
+          throw new ProviderError(label, "server", `${label}: ${msg}`, {
+            cause: json,
+          });
         }
         const chunk = translateChunk(json, model, label);
         if (chunk !== null) yield chunk;

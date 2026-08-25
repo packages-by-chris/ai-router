@@ -4,6 +4,8 @@
  * fixtures in /conformance are data-driven from it.
  */
 
+import type { ModelCapabilities } from "../routing/capabilities.js";
+
 /** Known provider ids. "openai-compatible" covers any OpenAI-shaped base URL. */
 export const PROVIDER_IDS = [
   "openai",
@@ -76,7 +78,23 @@ export interface ModelRoute {
    * Ignored by other strategies.
    */
   weight?: number;
+  /**
+   * Declared model capability profile. When present, the router eliminates
+   * candidates that cannot serve a request (tools/vision/structured output/
+   * context window/...) BEFORE execution. Omitted = route is always
+   * eligible (unknown profile never filters).
+   */
+  capabilities?: ModelCapabilities;
 }
+
+export type RoutingStrategy =
+  | "fallback"
+  | "round-robin"
+  | "weighted"
+  | "least-latency"
+  | "cheapest"
+  | "balanced"
+  | "quality-first";
 
 export interface RouterConfig {
   /**
@@ -85,14 +103,24 @@ export interface RouterConfig {
    */
   routes: ModelRoute[];
   /**
-   * Route selection across the chain.
+   * Route selection across the chain. All strategies keep fallback order
+   * AFTER the chosen start: they reorder/pick where traffic lands first,
+   * then walk the remaining chain on failure.
    * - "fallback" (default): strict order — chain[0] is primary until it fails.
    * - "round-robin": each request rotates the starting point cyclically.
    * - "weighted": each request picks the starting point proportional to
    *   route `weight`, then falls back in chain order from there.
    * - "least-latency": routes are tried fastest-first, using a per-route
    *   exponential moving average of observed success latency (in-process).
-   * Only meaningful when tail routes are interchangeable with the primary.
+   * - "cheapest": priced routes first, ordered by estimated per-request USD
+   *   cost ascending (unpriced routes follow in config order). Requires
+   *   `pricing` to have an effect.
+   * - "balanced": score = 0.5·cost + 0.3·speed + 0.2·reliability, each rank-
+   *   normalized across the candidate slice; unpriced/unobserved signals are
+   *   neutral 0.5.
+   * - "quality-first": orders by application-recorded outcome quality
+   *   (`recordOutcome`) when available, falling back to balanced ordering.
+   *   Pair with CallOptions `routing.task` for task-aware selection.
    */
-  strategy?: "fallback" | "round-robin" | "weighted" | "least-latency";
+  strategy?: RoutingStrategy;
 }

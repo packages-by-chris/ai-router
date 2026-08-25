@@ -33,14 +33,31 @@ const ROUTE_FIELDS: ReadonlySet<string> = new Set([
   "limit",
   "budget",
   "weight",
+  "capabilities",
 ]);
 const LIMIT_FIELDS: ReadonlySet<string> = new Set(["rpm", "tpm"]);
 const BUDGET_FIELDS: ReadonlySet<string> = new Set(["usd", "windowMs"]);
+const CAPABILITY_FIELDS: ReadonlySet<string> = new Set([
+  "streaming",
+  "tools",
+  "vision",
+  "json",
+  "structuredOutput",
+  "reasoning",
+  "audio",
+  "embeddings",
+  "multimodal",
+  "longContext",
+  "contextWindow",
+]);
 const STRATEGIES: ReadonlySet<string> = new Set([
   "fallback",
   "round-robin",
   "weighted",
   "least-latency",
+  "cheapest",
+  "balanced",
+  "quality-first",
 ]);
 
 /**
@@ -107,7 +124,7 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
   const strategy = interpolated.strategy;
   if (strategy !== undefined && (typeof strategy !== "string" || !STRATEGIES.has(strategy))) {
     errors.push(
-      'config.strategy: must be "fallback", "round-robin", "weighted", or "least-latency"',
+      'config.strategy: must be "fallback", "round-robin", "weighted", "least-latency", "cheapest", "balanced", or "quality-first"',
     );
   }
 
@@ -298,6 +315,40 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       budget = { usd: raw.budget.usd as number, ...(raw.budget.windowMs !== undefined ? { windowMs: raw.budget.windowMs as number } : {}) };
     }
 
+    let capabilities: ModelRoute["capabilities"];
+    if (raw.capabilities !== undefined) {
+      if (!isObject(raw.capabilities)) {
+        errors.push(`${at}.capabilities: expected an object`);
+        return;
+      }
+      for (const key of Object.keys(raw.capabilities)) {
+        if (!CAPABILITY_FIELDS.has(key)) {
+          errors.push(
+            `${at}.capabilities.${key}: unknown field (known: ${[...CAPABILITY_FIELDS].join(", ")})`,
+          );
+        }
+      }
+      const caps: Record<string, boolean | number> = {};
+      for (const key of CAPABILITY_FIELDS) {
+        const value = raw.capabilities[key];
+        if (value === undefined) continue;
+        if (key === "contextWindow") {
+          if (!positiveInt(value)) {
+            errors.push(`${at}.capabilities.contextWindow: must be a positive integer`);
+            return;
+          }
+          caps[key] = value as number;
+        } else {
+          if (typeof value !== "boolean") {
+            errors.push(`${at}.capabilities.${key}: must be a boolean`);
+            return;
+          }
+          caps[key] = value as boolean;
+        }
+      }
+      capabilities = caps as ModelRoute["capabilities"];
+    }
+
     routes.push({
       id,
       provider: provider as ModelRoute["provider"],
@@ -315,6 +366,7 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       limit,
       budget,
       weight: raw.weight as number | undefined,
+      capabilities,
     });
   });
 

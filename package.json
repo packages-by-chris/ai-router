@@ -12,7 +12,8 @@
     "typecheck": "turbo run typecheck",
     "conformance": "turbo run conformance",
     "dev": "turbo run dev",
-    "smoke": "tsx scripts/smoke.ts"
+    "smoke": "tsx scripts/smoke.ts",
+    "bench": "tsx scripts/bench.ts"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

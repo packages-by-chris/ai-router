@@ -1,6 +1,13 @@
 import { parseConfig } from "./config/parse.js";
 import type { RouterConfig } from "./config/schema.js";
-import { RoutingEngine, type CallOptions, type EngineOptions, type RouterStats } from "./engine.js";
+import {
+  RoutingEngine,
+  type CallOptions,
+  type EngineOptions,
+  type OutcomeEvent,
+  type RoutingExplanation,
+  type RouterStats,
+} from "./engine.js";
 import type { RawRequestOptions } from "./providers/types.js";
 import type {
   ChatChunk,
@@ -73,8 +80,29 @@ export class AIRouter {
     return this.engine.raw(routeId, opts);
   }
 
-  /** Observability snapshot: circuit breakers, key cursors, limiter totals. */
+  /** Observability snapshot: circuit breakers, key cursors, limiter totals, health. */
   stats(): Promise<RouterStats> {
     return this.engine.stats();
+  }
+
+  /**
+   * Dry-run routing: evaluate the candidate pipeline (strategy order,
+   * capability gate, filter, constraints, circuit state, budgets) without
+   * executing a request or consuming rate-limit quota. Returns candidates,
+   * rejection reasons, estimated cost, and observed latencies. Never
+   * includes credentials.
+   */
+  explain(req: ChatRequest, opts: Pick<CallOptions, "routing"> = {}): Promise<RoutingExplanation> {
+    return this.engine.explain(req, opts);
+  }
+
+  /**
+   * Record an application-observed outcome (quality, success, latency, cost)
+   * for a served request — the input to "quality-first" routing and the
+   * foundation for adaptive routing. Applications define quality; unknown
+   * route ids are ignored.
+   */
+  recordOutcome(event: OutcomeEvent): void {
+    this.engine.recordOutcome(event);
   }
 }

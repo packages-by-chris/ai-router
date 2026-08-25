@@ -506,6 +506,7 @@ async function signedRequest(
   url: string,
   body: Record<string, unknown>,
   ctx: AdapterContext,
+  streaming = false,
 ): Promise<Response> {
   const region = route.region;
   if (!region) {
@@ -610,6 +611,7 @@ export class BedrockAdapter implements ProviderAdapter {
       converseUrl(route, "converse-stream"),
       translateRequest(req, route.model, true),
       ctx,
+      true, // streaming: keep the abort relay attached for the body lifetime
     );
     await requireOk(resp, "bedrock");
     const body = resp.body;

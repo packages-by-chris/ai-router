@@ -53,6 +53,26 @@ native adapter only for protocol outliers. Requirements:
 - Tests must not depend on ambient state; env vars are read at call time.
 - New engine features need tests covering: success path, each failure-recovery
   layer (retry / key rotation / fallback), and caller abort.
+- Failure scenarios use the deterministic simulator
+  (`packages/core/tests/simulator.ts`) — scripted per-host behaviors, no real
+  network, replayable. Prefer it over ad-hoc mocks for new routing tests.
+- Telemetry/error surfaces must never contain credentials. If you add a new
+  event type, error field, or API response shape, extend
+  `tests/security.test.ts` with a leak assertion for it.
+
+## Routing internals (`packages/core/src/routing/`)
+
+- `capabilities.ts` — capability metadata + elimination rules. Explicit
+  `routing.require` is a HARD constraint (undeclared = rejected);
+  request-inferred requirements are METADATA-DRIVEN (only declared profiles
+  can conflict). Keep this asymmetry — it is what preserves backwards
+  compatibility.
+- `health.ts` — in-memory per-route health: latency/TTFT ring buffers,
+  percentiles, per-key cooldowns. No shared backend by design (same trade-off
+  as the circuit breaker).
+- `order.ts` — candidate scoring for cheapest/balanced/quality-first. Missing
+  signals degrade to neutral 0.5; never throw on partial data.
+- `outcomes.ts` — application-recorded quality EMAs keyed by task+route.
 
 ## Commit / PR style
 

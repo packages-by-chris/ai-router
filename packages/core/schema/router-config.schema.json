@@ -4,28 +4,56 @@
   "title": "RouterConfig",
   "description": "JSON-serializable configuration for @ai-router/core. The Python SDK validates against this same schema.",
   "type": "object",
-  "required": ["routes"],
+  "required": [
+    "routes"
+  ],
   "additionalProperties": false,
   "properties": {
     "routes": {
       "type": "array",
       "minItems": 1,
-      "items": { "$ref": "#/definitions/ModelRoute" }
+      "items": {
+        "$ref": "#/definitions/ModelRoute"
+      }
     },
     "strategy": {
-      "enum": ["fallback", "round-robin", "weighted", "least-latency"],
-      "default": "fallback"
+      "enum": [
+        "fallback",
+        "round-robin",
+        "weighted",
+        "least-latency",
+        "cheapest",
+        "balanced",
+        "quality-first"
+      ],
+      "default": "fallback",
+      "description": "Route selection across the chain. All strategies keep fallback order after the chosen start. \"cheapest\" orders priced routes by estimated per-request USD cost; \"balanced\" scores 0.5*cost + 0.3*speed + 0.2*reliability; \"quality-first\" orders by application-recorded outcome quality, falling back to balanced."
     }
   },
   "definitions": {
     "ModelRoute": {
       "type": "object",
-      "required": ["id", "provider", "model"],
+      "required": [
+        "id",
+        "provider",
+        "model"
+      ],
       "additionalProperties": false,
       "properties": {
-        "id": { "type": "string", "minLength": 1 },
+        "id": {
+          "type": "string",
+          "minLength": 1
+        },
         "provider": {
-          "enum": ["openai", "openai-compatible", "azure", "anthropic", "gemini", "bedrock", "vertex"],
+          "enum": [
+            "openai",
+            "openai-compatible",
+            "azure",
+            "anthropic",
+            "gemini",
+            "bedrock",
+            "vertex"
+          ],
           "description": "Built-in adapters, plus any id from the preset catalog (groq, deepseek, mistral, openrouter, together, fireworks, perplexity, xai, cerebras, sambanova, cohere, deepinfra, nvidia, github-models, hyperbolic, novita, nebius, lambda, moonshot, zhipu, yi, stepfun, upstage, ai21, huggingface, scaleway, ovhcloud, hunyuan, friendliai, kluster, ollama, lmstudio, vllm) or registered via registerAdapter(). Preset ids resolve baseUrl/auth automatically; keyless presets (ollama, lmstudio, vllm) may omit apiKey/apiKeys. bedrock apiKey format: ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]. vertex apiKey: an access token OR a service-account JSON key."
         },
         "model": {
@@ -33,11 +61,17 @@
           "minLength": 1,
           "description": "Provider-side model name; for azure the deployment name; for bedrock the model id (e.g. anthropic.claude-3-5-sonnet-20240620-v1:0)."
         },
-        "apiKey": { "type": "string", "minLength": 1 },
+        "apiKey": {
+          "type": "string",
+          "minLength": 1
+        },
         "apiKeys": {
           "type": "array",
           "minItems": 1,
-          "items": { "type": "string", "minLength": 1 }
+          "items": {
+            "type": "string",
+            "minLength": 1
+          }
         },
         "baseUrl": {
           "type": "string",
@@ -61,58 +95,185 @@
         },
         "headers": {
           "type": "object",
-          "additionalProperties": { "type": "string" }
+          "additionalProperties": {
+            "type": "string"
+          }
         },
-        "maxRetries": { "type": "integer", "minimum": 0, "default": 2 },
-        "timeoutMs": { "type": "integer", "minimum": 1, "default": 30000 },
-        "streamIdleTimeoutMs": { "type": "integer", "minimum": 1 },
-        "limit": { "$ref": "#/definitions/LimitRule" },
-        "budget": { "$ref": "#/definitions/BudgetRule" },
+        "maxRetries": {
+          "type": "integer",
+          "minimum": 0,
+          "default": 2
+        },
+        "timeoutMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 30000
+        },
+        "streamIdleTimeoutMs": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "limit": {
+          "$ref": "#/definitions/LimitRule"
+        },
+        "budget": {
+          "$ref": "#/definitions/BudgetRule"
+        },
         "weight": {
           "type": "number",
           "exclusiveMinimum": 0,
           "default": 1,
           "description": "Relative traffic share under strategy \"weighted\"."
+        },
+        "capabilities": {
+          "type": "object",
+          "additionalProperties": false,
+          "description": "Declared capability profile. When present, the router eliminates candidates that cannot serve a request before execution (tools/vision/structured output/context window/...). Omitted = the route is always eligible.",
+          "properties": {
+            "streaming": {
+              "type": "boolean"
+            },
+            "tools": {
+              "type": "boolean"
+            },
+            "vision": {
+              "type": "boolean"
+            },
+            "json": {
+              "type": "boolean",
+              "description": "Accepts response_format json_object."
+            },
+            "structuredOutput": {
+              "type": "boolean",
+              "description": "Accepts schema-constrained output."
+            },
+            "reasoning": {
+              "type": "boolean",
+              "description": "Handles reasoning_effort hints."
+            },
+            "audio": {
+              "type": "boolean"
+            },
+            "embeddings": {
+              "type": "boolean"
+            },
+            "multimodal": {
+              "type": "boolean"
+            },
+            "longContext": {
+              "type": "boolean"
+            },
+            "contextWindow": {
+              "type": "integer",
+              "minimum": 1,
+              "description": "Max prompt tokens; larger requests are eliminated pre-flight."
+            }
+          }
         }
       },
       "allOf": [
         {
-          "if": { "properties": { "provider": { "const": "openai-compatible" } } },
-          "then": { "required": ["baseUrl"] }
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "openai-compatible"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "baseUrl"
+            ]
+          }
         },
         {
-          "if": { "properties": { "provider": { "const": "azure" } } },
-          "then": { "required": ["baseUrl", "apiVersion"] }
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "azure"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "baseUrl",
+              "apiVersion"
+            ]
+          }
         },
         {
-          "if": { "properties": { "provider": { "const": "bedrock" } } },
-          "then": { "required": ["region"] }
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "bedrock"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "region"
+            ]
+          }
         },
         {
-          "if": { "properties": { "provider": { "const": "vertex" } } },
-          "then": { "required": ["region", "project"] }
+          "if": {
+            "properties": {
+              "provider": {
+                "const": "vertex"
+              }
+            }
+          },
+          "then": {
+            "required": [
+              "region",
+              "project"
+            ]
+          }
         }
       ],
       "anyOf": [
-        { "required": ["apiKey"] },
-        { "required": ["apiKeys"] }
+        {
+          "required": [
+            "apiKey"
+          ]
+        },
+        {
+          "required": [
+            "apiKeys"
+          ]
+        }
       ]
     },
     "LimitRule": {
       "type": "object",
       "additionalProperties": false,
       "properties": {
-        "rpm": { "type": "integer", "minimum": 1 },
-        "tpm": { "type": "integer", "minimum": 1 }
+        "rpm": {
+          "type": "integer",
+          "minimum": 1
+        },
+        "tpm": {
+          "type": "integer",
+          "minimum": 1
+        }
       }
     },
     "BudgetRule": {
       "type": "object",
-      "required": ["usd"],
+      "required": [
+        "usd"
+      ],
       "additionalProperties": false,
       "properties": {
-        "usd": { "type": "number", "exclusiveMinimum": 0 },
-        "windowMs": { "type": "integer", "minimum": 1, "default": 60000 }
+        "usd": {
+          "type": "number",
+          "exclusiveMinimum": 0
+        },
+        "windowMs": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 60000
+        }
       }
     }
   }

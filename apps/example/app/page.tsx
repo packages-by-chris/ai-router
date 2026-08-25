@@ -561,6 +561,7 @@ export default function Page() {
     skipped_budget: "over budget · skip",
     circuit_open: "circuit open · skip",
     unsupported: "unsupported",
+    capability_mismatch: "capability mismatch · skip",
   };
 
   const probeFor = (id: string) => testResults?.find((t) => t.id === id);

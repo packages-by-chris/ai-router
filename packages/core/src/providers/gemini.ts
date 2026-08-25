@@ -371,6 +371,7 @@ async function request(
     return await fetchWithTimeout(ctx.fetchImpl, url, init, {
       timeoutMs: route.timeoutMs,
       signal: ctx.signal,
+      streaming: stream,
     });
   } catch (err) {
     throw toNetworkError("gemini", err);
