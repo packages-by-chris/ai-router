@@ -1,115 +1,82 @@
 # ai-router
 
-Provider-agnostic AI routing core. Users add their **own** provider keys; the
-library handles fallback chains, key-pool rotation, rate limiting, retries,
-and unified streaming. Pure client-side — no server, no key storage.
+**An embeddable, provider-agnostic AI routing engine for TypeScript.**
 
-**Status: v0.1 — TypeScript reference implementation. Python SDK next, gated
-on the shared conformance fixtures.**
-
-## Locked design decisions
-
-| Decision | Choice |
-| --- | --- |
-| Shape | Client-side library (no gateway service) |
-| Languages v1 | TypeScript (npm) + Python (PyPI), native SDKs |
-| Drift guard | Shared JSON conformance fixtures + config schema |
-| API surface | Unified OpenAI-compatible shape + per-provider raw escape hatch (planned) |
-| Rate limiting | Pluggable `RateLimitStore`; in-process default, Redis adapter opt-in |
-| Config | Code-first + JSON-serializable `RouterConfig` |
-| Providers v1 | OpenAI, Anthropic, Gemini, Azure, AWS Bedrock (Converse), Google Vertex, any `openai-compatible` base URL |
-| Runtime deps | Zero. `fetch` + WebStreams + WebCrypto only (Node 18+, Bun, Deno, edge) |
-
-## Semantics
-
-**Fallback chain.** Config routes are ordered. A request for route id at
-index `i` tries routes `i, i+1, …`. `model` in requests is a route id, never
-a provider model name.
-
-**Strategies.** `fallback` (default) tries strict order. `round-robin`
-rotates the chain start each request. `weighted` picks the start
-proportional to route `weight`, then falls back from there.
-`least-latency` orders routes by a per-route latency EMA of observed
-successes (unobserved routes are sampled first).
-
-**Three recovery layers, in order:**
-
-1. **Retry same route+key** — `rate_limit`, `server`, `network`, `timeout`.
-   Exponential backoff (400 ms base, 8 s cap, 25% jitter); a server
-   `Retry-After` raises the floor.
-2. **Rotate key** on `rate_limit` / `auth` / `permission`. Round-robin cursor
-   spreads successive requests across the pool.
-3. **Next route** in the chain. Exhausted everywhere → `AllRoutesFailedError`
-   carrying a full attempt trail.
-
-**Circuit breaker.** Per route, after `threshold` consecutive failures the
-route is skipped for `cooldownMs`. With `maxCooldownMs` set, each breach
-doubles the cooldown up to the cap (graduated cooldowns); without it the
-cooldown is fixed.
-
-**Budgets.** A route may carry `budget: { usd, windowMs }`. Actual spend is
-recorded post-hoc (micro-dollar integers) when `pricing` is configured;
-once the rolling window's spend reaches the cap the route is skipped
-pre-flight (`skipped_budget`) and traffic falls through. Stores without a
-`used()` read-back fail open.
-
-**Guardrails.** Input guards run once per call *before* routing and before
-the response cache — a blocked input never reaches any provider. Output
-guards run after `complete()` succeeds (post spend-recording). Guards may
-block (`pass: false`) or rewrite (`replace`). Streams apply input guards
-only; `raw()` bypasses everything by contract.
-
-**Observability.** Three hooks: `onLog` (structured lifecycle events:
-call_start, cache_hit, route_skip, attempt_retry with backoff delay,
-guardrail_block), `onAttempt` (per routing decision), `onFinish` (settlement
-summary with TTFB, usage, cost). Logger errors never break routing.
-
-**Response cache.** Pass `responseCache` (`get`/`set`/`ttlMs`) to cache
-exact-match `complete()` results by logical request hash. Bring your own
-backing store.
-
-**Streaming commit boundary.** `router.stream()` resolves only after the
-first chunk has arrived — the serving route is final. Errors before the
-first token are fallback-eligible; errors after commit surface to the caller.
-A provider swap mid-stream is impossible and never attempted silently.
-
-**Rate limiting.** `rpm` is enforced pre-flight (cost 1/request). `tpm` is
-gated with a ~3.5-chars/token estimate pre-flight and corrected post-hoc
-from provider usage reports (streaming included via
-`stream_options.include_usage`). Both use a 60 s sliding window keyed per
-route. In-process by default — inject a Redis-backed `RateLimitStore` for
-multi-replica deployments.
-
-**Guardrails.** Optional request/response validators that veto or rewrite
-traffic. Input guards run once per call before routing (blocked calls never
-reach a provider, never consume limits); output guards run after a successful
-`complete()` result, post spend-recording. Streams apply input guards only;
-`raw()` bypasses everything. Blocked calls throw `GuardrailBlockedError`
-(phase, guardrail name, reason) and fire an `onLog` event.
-
-**Observability (`onLog`).** Structured lifecycle events — call starts,
-cache hits, route skips with reasons, retry backoffs, guardrail vetoes —
-complementing the existing `onAttempt`/`onFinish` hooks. Callback errors are
-swallowed; logging never breaks routing.
-
-## Layout
+ai-router runs inside your application process — not beside it as a service.
+You declare routes across providers, and it handles the operational work of
+talking to them: fallback chains, retries, key-pool rotation, rate limiting,
+budgets, circuit breaking, and unified streaming. Your keys never leave your
+process.
 
 ```
-packages/core/
-  src/
-    config/       schema + validating parser (aggregated error messages)
-    http/         fetch w/ timeout, SSE parser (WebStreams)
-    limiter/      RateLimitStore interface + sliding-window MemoryStore
-    providers/    ProviderAdapter interface, adapters (openai, azure, anthropic,
-                  gemini, bedrock, vertex), presets, registry
-    guardrails.ts input/output validation hooks (block + transform)
-    engine.ts     fallback / retry / key-rotation / stream-commit engine
-    router.ts     AIRouter facade
-  tests/          vitest suites (190+ tests)
-  conformance/    JSON fixtures + runner — the cross-SDK drift guard
+┌──────────────┐
+│ Application  │
+└──────┬───────┘
+       │  complete() · stream() · embed() · raw()
+       ▼
+┌──────────────────────────────────────────────────┐
+│                   ai-router                      │
+│                                                  │
+│   guardrails → cache → strategy selection        │
+│        → rate limit / budget → circuit breaker   │
+│        → retry → key rotation → next route       │
+│                                                  │
+│   provider adapters (unified request/response)   │
+└──────┬─────────┬─────────┬─────────┬─────────────┘
+       ▼         ▼         ▼         ▼
+    OpenAI   Anthropic    Gemini   any OpenAI-compatible API
+                                (Azure, Bedrock, Vertex, Groq,
+                                 DeepSeek, Ollama, …)
 ```
 
-## Quickstart
+**Status:** v0.1.0, pre-release. The TypeScript core is feature-complete for
+its scope and covered by mock-based tests plus shared conformance fixtures.
+A Python SDK built against the same fixtures is planned but does not exist
+yet. The package is not yet published to npm.
+
+## What it is
+
+`@ai-router/core` is a client-side library that sits between your application
+code and AI provider APIs:
+
+- **In-process.** No gateway to deploy, no extra network hop, no vendor
+  holding your keys or your traffic.
+- **Provider abstraction.** One unified request/response shape (OpenAI-style,
+  the de facto lingua franca) translated per provider in both directions.
+- **Route-oriented.** Requests address a logical route id (`model: "fast"`),
+  never a raw provider model name. Routes are ordered into fallback chains.
+- **Zero runtime dependencies.** Only `fetch`, WebStreams, and WebCrypto.
+  Runs on Node 18+, Bun, Deno, and edge runtimes.
+- **Optional infrastructure.** Everything stateful is pluggable: rate-limit
+  storage defaults to in-process and accepts a Redis-backed store when you
+  outgrow one replica.
+
+## Why it exists
+
+Hosted AI gateways solve reliability by inserting a service between you and
+the provider. That adds a hop, an operator, a bill, and a third party
+terminating your credentials. Many applications don't need any of that — they
+need the *logic* of a gateway (fallback, rotation, throttling, cost caps)
+embedded directly in the app.
+
+ai-router is that logic as a library:
+
+| | Hosted gateway | Proxy server (LiteLLM) | ai-router |
+| --- | --- | --- | --- |
+| Runs | Vendor's cloud | A service you operate | In your process |
+| Provider keys | Often theirs / proxied | Yours, stored server-side | Yours, never leave the app |
+| Extra network hop | Yes | Yes | None |
+| Language | Any (HTTP) | Python-centric | TypeScript-native |
+| Failure domain | Vendor + your app | Proxy + your app | Your app only |
+
+Choose ai-router when you want routing behavior as part of your TypeScript
+codebase rather than another piece of infrastructure to run.
+
+## Quick start
+
+```bash
+npm install @ai-router/core
+```
 
 ```ts
 import { AIRouter } from "@ai-router/core";
@@ -117,98 +84,156 @@ import { AIRouter } from "@ai-router/core";
 const router = new AIRouter({
   routes: [
     { id: "fast", provider: "openai", model: "gpt-4o-mini",
-      apiKey: process.env.OPENAI_API_KEY, limit: { rpm: 60 } },
-    { id: "backup", provider: "openai-compatible",
-      baseUrl: "https://api.deepseek.com/v1", model: "deepseek-chat",
-      apiKey: process.env.DEEPSEEK_API_KEY },
+      apiKey: "${OPENAI_API_KEY}", limit: { rpm: 60 } },
+    // Preset providers resolve base URL and auth style for you:
+    { id: "backup", provider: "deepseek", model: "deepseek-chat",
+      apiKey: "${DEEPSEEK_API_KEY}" },
   ],
 });
 
+// `model` is a route id. If "fast" fails, "backup" serves the request.
 const res = await router.complete({
-  model: "fast", // falls back to "backup" if openai fails
+  model: "fast",
   messages: [{ role: "user", content: "hi" }],
 });
-
-const stream = await router.stream({ model: "fast", messages: [...] });
-for await (const chunk of stream) process.stdout.write(chunk.delta.content ?? "");
+console.log(res.choices[0].message.content);
+console.log(res.provider); // which route actually served it
 ```
 
-## Commands
+`${ENV_VAR}` strings are interpolated by `parseConfig` against `process.env`
+(or an explicit env map). You can also pass plain `apiKey` values directly.
 
-```bash
-npm install
-npm test            # turbo run test — every package with tests
-npm run conformance
-npm run typecheck   # all packages, not just core
-npm run build       # core + redis dist, nextjs example
+Streaming:
+
+```ts
+const stream = await router.stream({
+  model: "fast",
+  messages: [{ role: "user", content: "hi" }],
+});
+for await (const chunk of stream) {
+  process.stdout.write(chunk.delta.content ?? "");
+}
 ```
 
-Task graph lives in [`turbo.json`](turbo.json); builds are cached and
-topologically ordered (`@ai-router/core` builds before dependents). Tests skip
-the cache — they read env vars.
+## Core features
 
-## Roadmap
+- **Unified API surface** — `complete()`, `stream()`, `embed()` share the
+  same routing machinery; responses carry the serving `provider`.
+- **Fallback chains** — ordered routes; a request tries route *i*, then
+  *i+1*, … until one succeeds.
+- **Retries with backoff** — exponential backoff (400 ms base, 8 s cap, 25%
+  jitter), honoring provider `Retry-After` as a floor.
+- **Key-pool rotation** — multiple keys per route, rotated round-robin on
+  rate-limit/auth/permission errors.
+- **Rate limiting** — per-route rpm (pre-flight) and tpm (accounted post-hoc
+  from provider usage reports) over a 60 s sliding window.
+- **Spend budgets** — rolling USD budget per route, enforced pre-flight from
+  recorded spend, priced via configurable token rates.
+- **Circuit breaking** — skip a route after N consecutive failures, with
+  graduated cooldowns up to a cap.
+- **Streaming** — committed streams with SSE parsing for every wire format;
+  usage arrives on the final chunk.
+- **Guardrails** — input/output validators that block or rewrite traffic.
+- **Observability** — structured lifecycle events, per-attempt hooks,
+  end-of-call summaries with TTFB, usage, and cost.
+- **Raw escape hatch** — send anything the unified layer doesn't model
+  straight to the provider endpoint.
 
-1. ~~Anthropic adapter~~ done — typed SSE events, tool_use/tool_result blocks, system extraction, 529-overloaded retryable, stop_reason mapping
-2. ~~Gemini adapter~~ done — generateContent + streamGenerateContent?alt=sse, functionCall/functionResponse parts, systemInstruction, generationConfig, finishReason mapping
-3. ~~Redis `RateLimitStore` adapter~~ done — [`@ai-router/redis`](packages/redis/README.md), Lua-atomic sliding window, bring-your-own-client, fail-open default
-4. ~~Raw escape hatch~~ done — `router.raw(routeId, { path?, body?, headers? })` → undecorated `Response`; rpm still gates, key cursor shared with unified calls
-5. ~~Multimodal (images)~~ done — unified `content` accepts OpenAI-style parts (`text`, `image_url` with http(s) or data URIs); translated per provider
-6. ~~Structured output + reasoning + caching surfaces~~ done — `response_format: json_schema` (OpenAI native, Gemini `responseJsonSchema`, dropped on Anthropic), `reasoning_effort` → OpenAI `reasoning_effort` / Anthropic thinking budget / Gemini `thinkingConfig`, reasoning text surfaced on messages and stream deltas, `Usage.cached_tokens` / `cache_write_tokens` / `reasoning_tokens`, Anthropic `cache_control` markers via message `providerOptions`, tiered pricing (`cache_read`, `cache_write`)
-7. ~~Azure OpenAI adapter~~ done — deployment URLs, `api-key` auth, required `apiVersion`; reuses the OpenAI translation wholesale
-8. ~~Routing strategies~~ done — `weighted` (weight-proportional start) and `least-latency` (EMA ordering, exploration-first for unobserved routes)
-9. ~~Budgets + graduated cooldowns + response cache + call summaries~~ done — route `budget.usd` rolling-window enforcement, circuit-breaker cooldown doubling up to `maxCooldownMs`, pluggable exact-match response cache, `onFinish` summary events with TTFB and total latency
-10. ~~Bedrock adapter~~ done — Converse API across all Bedrock models, hand-rolled SigV4 over WebCrypto, binary event-stream parser, toolUse/toolResult blocks, reasoningContent
-11. ~~Vertex AI adapter~~ done — regional Vertex endpoints, service-account JWT exchange (RS256 over WebCrypto) with token caching or bearer passthrough, shared Gemini translation, `:predict` embeddings
-12. ~~Guardrails~~ done — input/output validators with block + transform verdicts; input runs pre-routing/pre-cache, output post-spend on complete()
-13. ~~onLog observability~~ done — structured lifecycle events (call_start, cache_hit, route_skip, attempt_retry with backoff delays, guardrail_block); engine-level + per-call hooks
-14. ~~Conformance: response + SSE fixtures~~ done — response cases for all adapters (incl. Bedrock), openai chunk-translation cases, `sse_parse` framing cases; runner supports async handlers
-15. ~~Provider presets expansion~~ done — 30+ OpenAI-compatible vendors
-16. Python SDK against the same conformance fixtures
-17. CI/CD pipeline + npm publish
+## Routing strategies
 
-### Provider presets & custom adapters
+Configured at the top level with `strategy`. Strategies reorder the fallback
+chain start; tail routes still serve if the chosen start fails.
 
-`provider` accepts built-in adapters (`openai`, `openai-compatible`,
-`azure`, `anthropic`, `gemini`, `bedrock`, `vertex`) plus a **preset
-catalog** of 30+ vendors that serve OpenAI-compatible APIs — groq, deepseek,
-mistral, openrouter, together, fireworks, perplexity, xai, cerebras,
-sambanova, cohere, deepinfra, nvidia, github-models, hyperbolic, novita,
-nebius, lambda, moonshot, zhipu, yi, stepfun, upstage, ai21, huggingface,
-scaleway, ovhcloud, hunyuan, friendliai, kluster, and keyless local runtimes
-(ollama, lmstudio, vllm):
+| Strategy | Selection |
+| --- | --- |
+| `"fallback"` *(default)* | Strict config order — primary until it fails. |
+| `"round-robin"` | Each request rotates the chain start cyclically. |
+| `"weighted"` | Start picked proportionally to route `weight`, then falls back in order. |
+| `"least-latency"` | Fastest-first by per-route latency EMA of observed successes; unobserved routes are sampled first. |
+
+Latency tracking is in-process (per engine instance). See
+[Current limitations](#current-limitations).
+
+## Reliability
+
+Three recovery layers run in order before a request fails:
+
+1. **Retry same route + key** — retryable error kinds (`rate_limit`,
+   `server`, `network`, `timeout`) get exponential backoff. Per-route
+   `maxRetries` (default 2) and `timeoutMs` (default 30 s).
+2. **Rotate key** — `rate_limit` / `auth` / `permission` errors try the next
+   key in the pool immediately; the cursor spreads successive requests
+   across the pool.
+3. **Next route** — exhausted routes fall through the chain. Total failure
+   throws `AllRoutesFailedError` carrying the full attempt trail (route,
+   key index, error kind, message, `Retry-After`) for logging and retries.
+
+Additional layers:
+
+- **Circuit breaker** (`circuitBreaker: { threshold, cooldownMs,
+  maxCooldownMs }`) — after `threshold` consecutive failures a route is
+  skipped for `cooldownMs`. Each breach doubles the cooldown up to
+  `maxCooldownMs` when set; fixed otherwise.
+- **Budgets** (`budget: { usd, windowMs }`) — actual cost is recorded
+  post-hoc in micro-dollar integers (requires `pricing` and a store with
+  read-back). Once the window's spend reaches the cap, the route is skipped
+  pre-flight and traffic falls through. Stores without read-back fail open.
+- **Caller cancellation** — an aborted `signal` propagates immediately:
+  no retry, no key rotation, no fallback.
+- **Streaming commit boundary** — `stream()` resolves only after the first
+  chunk has arrived, so the serving route is final. Errors before the first
+  token are fallback-eligible; errors after commit surface to the caller.
+  A provider swap mid-stream is impossible. Optional `streamIdleTimeoutMs`
+  detects stalled streams on both sides of the boundary.
+
+Error classification drives all of this; see `errors.ts` — every failure is
+a typed `ProviderError` with a `kind` from a closed taxonomy
+(`rate_limit`, `auth`, `permission`, `not_found`, `invalid_request`,
+`server`, `network`, `timeout`, `unknown`).
+
+## Providers
+
+Built-in adapters implement each provider's native wire protocol:
+
+| Adapter | Notes |
+| --- | --- |
+| `openai` / `openai-compatible` | Chat completions, embeddings, SSE streaming |
+| `anthropic` | Typed SSE events, tool blocks, system extraction, prompt-cache markers |
+| `gemini` | `generateContent` + `streamGenerateContent?alt=sse`, function calling |
+| `azure` | Azure OpenAI deployment URLs, `api-key` auth, required `apiVersion` |
+| `bedrock` | Converse API, SigV4 signing over WebCrypto, event-stream parsing |
+| `vertex` | Regional Vertex endpoints, service-account JWT exchange over WebCrypto |
+
+### Presets
+
+Most vendors serve OpenAI-compatible APIs; those are data, not adapters.
+30+ presets ship built in — groq, deepseek, mistral, together, fireworks,
+perplexity, xai, cerebras, openrouter, cohere, sambanova, nvidia,
+github-models, and more — plus keyless local runtimes (`ollama`, `lmstudio`,
+`vllm`). A preset resolves adapter + base URL + auth style from the provider
+id alone:
 
 ```ts
 { id: "fast", provider: "groq", model: "llama-3.3-70b-versatile",
-  apiKey: "${GROQ_API_KEY}" }               // baseUrl/auth resolved for you
+  apiKey: "${GROQ_API_KEY}" }
 { id: "local", provider: "ollama", model: "llama3.2" }  // no key needed
-
-// Cloud enterprise providers:
-{ id: "aws", provider: "bedrock", region: "us-east-1",
-  model: "anthropic.claude-3-5-sonnet-20240620-v1:0",
-  apiKey: "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" }
-{ id: "gcp", provider: "vertex", region: "us-central1", project: "my-proj",
-  model: "gemini-2.0-flash", apiKey: "${GCP_SA_KEY_JSON}" }
 ```
 
-Explicit `baseUrl`/`headers` on the route always win over preset values.
+Explicit `baseUrl` / `headers` on the route always win over preset values.
 
-For anything outside the catalog, register a third-party adapter:
+### Unified surface highlights
 
-```ts
-import { registerAdapter, knownProviderIds } from "@ai-router/core";
-registerAdapter("my-gateway", () => new MyGatewayAdapter());
-// now valid in configs: { provider: "my-gateway", ... }
-```
-
-External adapters can run the conformance fixtures against their own
-translation functions via the exported kit
-(`runTranslationCases`, `stableJson`, types from `@ai-router/core`).
-
-### providerOptions escape hatch
-
-Per-request extras ride along with translation/retries/fallback (unlike
-`router.raw()`). Namespaces merge into the wire body; later keys win:
+- Multimodal content parts (`text`, `image_url` with http(s)/data URIs),
+  translated per provider.
+- Tool calling with unified tool-call/tool-result translation in requests,
+  responses, and streams.
+- `response_format` (`json_object` / `json_schema` where supported),
+  `reasoning_effort` mapped to each provider's thinking controls, and
+  reasoning text surfaced on messages and stream deltas.
+- Usage detail (`cached_tokens`, `cache_write_tokens`, `reasoning_tokens`)
+  and tiered pricing (`cache_read`, `cache_write`).
+- `providerOptions` — per-request extras merged into a specific provider's
+  wire body while keeping translation/retries/fallback (unlike `raw()`):
 
 ```ts
 router.complete({
@@ -217,92 +242,238 @@ router.complete({
   providerOptions: {
     openai: { parallel_tool_calls: false },
     anthropic: { metadata: { user_id: "u1" } },
-    gemini: { safetySettings: [] },
-    azure: { seed: 42 },
   },
 });
 ```
 
-Prompt-cache breakpoints are message-level:
-`{ role: "system", content: "...", providerOptions: { anthropic: { cache_control: true } } }`.
+Anything still outside the unified layer goes through `router.raw(routeId, {
+path?, body?, headers?, method?, signal? })`, which returns the undecorated
+provider `Response`. Raw calls get rpm gating and share the key cursor, but
+no retries or fallback.
 
-## Example app
+## Configuration
 
-[`apps/example`](apps/example/README.md) — Next.js chat UI
-streaming through the router with an env-driven fallback chain (first
-provider key set = primary, rest = fallbacks). Shows the singleton-router
-pattern for frameworks with hot reload.
+Configs are JSON-serializable objects validated by `parseConfig`, which
+collects all violations into one `ConfigError` with JSON-path locations.
+Pass raw input (e.g. a loaded JSON file) to `new AIRouter(...)` and it is
+validated on construction.
 
-### Docs site
+```ts
+interface RouterConfig {
+  routes: ModelRoute[];   // ordered fallback chain
+  strategy?: "fallback" | "round-robin" | "weighted" | "least-latency";
+}
+```
 
-[`apps/docs`](apps/docs) — Next.js documentation site: sidebar navigation,
-syntax-highlighted pages covering the full API, and a landing page, styled
-with the same console theme as [`apps/example`](apps/example/README.md).
-Content lives in `apps/docs/content/*.md`. `npm run dev` starts both apps;
-docs alone: `npm run dev -w @ai-router/docs`.
+Route fields:
 
-## Live smoke test
+| Field | Meaning |
+| --- | --- |
+| `id` | Logical name used as `model` in requests. Unique. |
+| `provider` | Built-in adapter, preset id, or registered custom id. |
+| `model` | Provider-side model name (deployment name for Azure). |
+| `apiKey` / `apiKeys` | Single key or pool. Merged; rotated on key-related errors. |
+| `baseUrl`, `headers` | Endpoint override; required for `openai-compatible`. |
+| `apiVersion` | Azure only. |
+| `region`, `project` | Bedrock/Vertex region; GCP project for Vertex. |
+| `maxRetries`, `timeoutMs` | Defaults 2 / 30000. |
+| `streamIdleTimeoutMs` | Max silence between stream chunks. Default off. |
+| `limit` | `{ rpm?, tpm? }`. |
+| `budget` | `{ usd, windowMs? }`. Requires `pricing`. |
+| `weight` | Traffic share under `strategy: "weighted"`. |
 
-Mocks prove plumbing; real APIs prove wire format. Before trusting a release:
+Engine options (second constructor argument): `store`, `fetchImpl`, `sleep`,
+`rng`, `middleware`, `circuitBreaker`, `pricing`, `responseCache`,
+`guardrails`, `onLog`. All optional; all injectable for testing.
+
+Per-request options: `signal` (abort), `onAttempt`, `onFinish`, `onLog`.
+
+## Extensibility
+
+**Custom providers.** For endpoints outside the preset catalog, register an
+adapter implementing `ProviderAdapter` (`complete`, `stream`, `raw`, optional
+`embed`). Registered ids become valid `provider` values in configs.
+
+```ts
+import { registerAdapter } from "@ai-router/core";
+
+registerAdapter("my-gateway", () => new MyGatewayAdapter());
+// config: { id: "gw", provider: "my-gateway", model: "...", apiKey: "..." }
+```
+
+**Conformance kit.** Pure translation functions can be tested against the
+same JSON fixtures the built-in adapters use — `runTranslationCases`,
+`stableJson`, and related types are exported from `@ai-router/core`.
+
+**Pluggable state.** `RateLimitStore` (four-method surface: `take`,
+`record`, optional `used`, optional `snapshot`) and the response cache are
+interfaces, not concrete services.
+
+**Middleware & hooks.** `middleware.beforeRequest` /
+`afterResponse` run around each attempt; `onLog` emits structured lifecycle
+events (`call_start`, `cache_hit`, `route_skip`, `attempt_retry` with backoff
+delays, `guardrail_block`); `onFinish` fires once per call with wall time,
+TTFB (streams), attempts, usage, and cost. Callback errors are swallowed —
+observability never breaks routing.
+
+## Streaming
+
+- Adapters perform the HTTP request eagerly, so HTTP errors throw before any
+  chunk is consumed — this is what makes pre-first-token fallback possible.
+- Chunks are a unified shape (`delta.content`, `delta.reasoning`,
+  `delta.tool_calls`); usage lands on the final chunk when the provider
+  reports it.
+- Input guardrails apply to streams; output guards do not (scanning would
+  require buffering, defeating the point).
+- Helpers: `streamText(stream)` collects text; `collectStream(stream)`
+  collects chunks.
+
+```ts
+import { streamText } from "@ai-router/core";
+const text = await streamText(router.stream({ model: "fast", messages }));
+```
+
+## State and scaling
+
+The default `MemoryStore` keeps rate-limit and budget windows in-process.
+With multiple replicas each process counts independently — 3 pods ×
+`rpm: 60` is effectively 180 rpm. Inject a shared store to fix it:
+
+```ts
+import { AIRouter } from "@ai-router/core";
+import { RedisStore, ioredisClient } from "@ai-router/redis";
+import Redis from "ioredis";
+
+const router = new AIRouter(config, {
+  store: new RedisStore({ client: ioredisClient(new Redis(process.env.REDIS_URL)) }),
+});
+```
+
+[`@ai-router/redis`](packages/redis/) implements the same sliding-window
+semantics atomically via Lua (ZSET-backed), works with ioredis, node-redis,
+or any client exposing EVAL, has no hard dependency on either, and fails
+open by default when Redis is unreachable.
+
+What stays in-process regardless of store: circuit-breaker state and the
+latency EMA. Multi-replica circuit breaking is a known limitation, listed below.
+
+## Testing
+
+```bash
+npm install          # first
+npm test             # vitest across all packages (~210 cases)
+npm run conformance  # cross-SDK fixture tests
+npm run typecheck    # depends on build
+npm run build        # turbo build (core → redis → apps)
+```
+
+Run a single package or file:
+
+```bash
+npm test -w @ai-router/core
+npx vitest run packages/core/tests/engine.test.ts
+```
+
+Test principles: mock-based unit tests (no snapshots), env vars read at call
+time, and coverage requirements for each failure-recovery layer. Wire-format
+correctness is additionally guarded by conformance fixtures — data-driven
+JSON cases for request translation, response translation, chunk translation,
+and SSE framing, shared across SDKs so implementations cannot drift.
+
+Live smoke test against real APIs (manual, cheap models, ~16 tokens):
 
 ```bash
 OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... \
   npx tsx scripts/smoke.ts
 ```
 
-One tiny completion + one tiny stream per provider with a key set (haiku /
-flash / mini class, ~16 max tokens). Non-zero exit on any failure.
+## Runtime characteristics
 
-### Known unified-layer limits (use `router.raw` for these)
+- **Zero runtime dependencies.** Core ships only compiled TypeScript;
+  `fetch`, WebStreams, WebCrypto are assumed from the platform.
+  Node ≥ 18, Bun, Deno, edge runtimes.
+- **No hop.** Requests go from your process to the provider directly.
+  Routing overhead is map lookups, a hash for cache keys, and integer math.
+- **State footprint.** Per instance: circuit-breaker entries per route, key
+  cursors, a latency EMA per route, and (default store) sliding-window logs
+  sized by traffic within 60 s windows.
+- **Token accounting.** tpm gating reads recorded usage post-hoc rather than
+  reserving estimates pre-flight, so accounting matches provider reports.
+  An `estimateTokens` heuristic is exported for callers building their own
+  pre-flight gating.
+- **Cost math.** Integer micro-dollar recording keeps budget arithmetic exact
+  and safe for any store, including Redis Lua.
 
-- Gemini 3 tool loops may need `thoughtSignature` round-tripping — not
-  modeled; use raw for Gemini 3 function calling until it is
-- Gemini image URLs get mimeType guessed from the file extension
-- `response_format: json_schema` on Anthropic routes is dropped (no
-  equivalent); logprobs, server tools: not modeled — use raw or
-  `providerOptions`
-- Audio/image-generation/video surfaces are out of scope by design
+## Current limitations
 
-### Multi-replica rate limiting
+Honest list; none are hidden behind marketing:
 
-In-process limiting undercounts by replica count (3 pods × 60 rpm config =
-180 rpm real). Shared state fixes it:
+- **Pre-release software.** v0.1.0, unstable API, not yet on npm, no CI
+  pipeline yet.
+- **In-process intelligence.** Circuit-breaker state, least-latency EMA, and
+  response-cache coordination are per engine instance. Only rate limiting and
+  budgets have a shared-store path today.
+- **Response cache is naive.** Exact-match FNV-1a hashing of the serialized
+  request; fine for dedup, not adversarial-key safe. Bring a stronger hash in
+  your backing store if that matters.
+- **tpm gating is approximate under concurrency.** It checks recorded usage
+  pre-flight and records post-hoc; bursts between check and record can
+  overshoot within a window.
+- **Unified-layer gaps** (use `router.raw()` or `providerOptions`):
+  Gemini tool loops may need `thoughtSignature` round-tripping (not modeled);
+  `json_schema` responses are dropped on Anthropic routes (no equivalent);
+  logprobs and server-side tools are not modeled.
+- **Modality scope.** Text chat, vision inputs, embeddings. Audio, image
+  generation, and video are out of scope by design.
+- **Guardrails on streams are input-only**, as described above.
+- **Python SDK does not exist yet.**
 
-```ts
-import { RedisStore, ioredisClient } from "@ai-router/redis";
+## Roadmap
 
-new AIRouter(config, { store: new RedisStore({ client: ioredisClient(redis) }) });
+**Available**
+
+- Adapters: OpenAI, Azure, Anthropic, Gemini, Bedrock (Converse + SigV4),
+  Vertex (JWT auth), openai-compatible + 30+ presets
+- Fallback chains, retries with backoff, key-pool rotation, circuit breaker
+  with graduated cooldowns
+- Sliding-window rate limits, USD budgets, tiered pricing, response cache
+- Guardrails (input/output, block + rewrite), structured `onLog` events,
+  call summaries with TTFB
+- Committed streaming, embeddings, multimodal content, tool calling,
+  structured output, reasoning surfaces, `raw()` escape hatch
+- `@ai-router/redis` shared rate-limit store
+- Conformance fixture suite (request/response/chunk/SSE)
+
+**Planned**
+
+- Python SDK validated against the same conformance fixtures
+- CI pipeline and first npm release
+
+**Exploring**
+
+- Routing signals beyond config order and observed latency: provider health,
+  cost-aware and quality-aware selection, adaptive routing informed by
+  application-level feedback. Today's `least-latency` strategy (latency EMA)
+  is the only adaptive signal implemented; nothing else should be assumed.
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md). Hard rules: zero runtime deps in
+core, conformance fixtures are the cross-SDK contract (never edited
+unilaterally), `model` is always a route id, ESM-only strict TypeScript.
+Small diffs; run `npm test && npm run conformance && npm run build` before
+pushing.
+
+Repository layout:
+
+```
+packages/core/    @ai-router/core — the library
+packages/redis/   @ai-router/redis — shared RateLimitStore
+apps/example/     Next.js chat demo (env-driven fallback chain)
+apps/docs/        Documentation site
+scripts/smoke.ts  Live provider smoke test
 ```
 
-### Anthropic translation notes
+## License
 
-- `system` messages → top-level `system` (joined `\n\n`); consecutive
-  same-role messages merged into single turns
-- `max_tokens` required by Anthropic — defaults to 4096 when omitted
-- tool loop: assistant `tool_calls` → `tool_use` blocks (arguments parsed);
-  `role: "tool"` messages → user-turn `tool_result` blocks; response
-  `tool_use` blocks → unified `tool_calls` (arguments re-serialized)
-- `stop` → `stop_sequences`; `response_format` has no equivalent (dropped)
-- stop_reason map: `end_turn|stop_sequence|pause_turn`→`stop`,
-  `max_tokens`→`length`, `tool_use`→`tool_calls`, `refusal`→`content_filter`
-- HTTP 529 (overloaded) classifies as retryable `server`; mid-stream
-  `error` events surface as ProviderErrors after the commit boundary
-
-### Gemini translation notes
-
-- roles `user`/`model`; system → top-level `systemInstruction`
-- sampling under `generationConfig`: `maxOutputTokens`, `stopSequences`,
-  `responseMimeType` (from `response_format: json_object`)
-- tools nest under `tools[0].functionDeclarations`; `tool_choice` maps to
-  `toolConfig.functionCallingConfig` — `AUTO`/`ANY`/`NONE`, named forcing
-  via `allowedFunctionNames`
-- tool loop: assistant `tool_calls` → `functionCall` parts; `role:"tool"`
-  → user-turn `functionResponse` parts (`response` must be a JSON object;
-  function NAME resolved from the earlier tool_call id, since Gemini
-  identifies responses by name)
-- finishReason map: `STOP`→`stop`, `MAX_TOKENS`→`length`,
-  `SAFETY|RECITATION|BLOCKLIST|PROHIBITED_CONTENT`→`content_filter`
-- blocked prompts arrive as HTTP 200 with `promptFeedback.blockReason` and
-  no candidates → unified `content_filter`
-- streaming via `models/{model}:streamGenerateContent?alt=sse`; usage
-  accumulates from `usageMetadata` across chunks, emitted on the final one
+[MIT](LICENSE)
