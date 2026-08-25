@@ -109,6 +109,54 @@ export const PROVIDER_PRESETS: Record<string, ProviderPreset> = {
     adapter: "openai-compatible",
     baseUrl: "https://api.lambda.ai/v1",
   },
+  moonshot: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.moonshot.cn/v1",
+  },
+  zhipu: {
+    adapter: "openai-compatible",
+    baseUrl: "https://open.bigmodel.cn/api/paas/v4",
+  },
+  yi: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.lingyiwanwu.com/v1",
+  },
+  stepfun: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.stepfun.com/v1",
+  },
+  upstage: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.upstage.ai/v1/solar",
+  },
+  ai21: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.ai21.com/studio/v1",
+  },
+  huggingface: {
+    adapter: "openai-compatible",
+    baseUrl: "https://router.huggingface.co/v1",
+  },
+  scaleway: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.scaleway.ai/v1",
+  },
+  ovhcloud: {
+    adapter: "openai-compatible",
+    baseUrl: "https://oai.endpoints.kepler.ai.cloud.ovh.net/v1",
+  },
+  hunyuan: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.hunyuan.cloud.tencent.com/v1",
+  },
+  friendliai: {
+    adapter: "openai-compatible",
+    baseUrl: "https://inference.friendli.ai/v1",
+  },
+  kluster: {
+    adapter: "openai-compatible",
+    baseUrl: "https://api.kluster.ai/v1",
+  },
 
   // Local runtimes: no key needed.
   ollama: {

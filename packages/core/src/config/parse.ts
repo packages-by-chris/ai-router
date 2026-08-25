@@ -24,6 +24,8 @@ const ROUTE_FIELDS: ReadonlySet<string> = new Set([
   "apiKeys",
   "baseUrl",
   "apiVersion",
+  "region",
+  "project",
   "headers",
   "maxRetries",
   "timeoutMs",
@@ -195,6 +197,22 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       errors.push(`${at}.apiVersion: only valid when provider is "azure"`);
       return;
     }
+    for (const [field, ownerList, hint] of [
+      ["region", ["bedrock", "vertex"], 'e.g. "us-east-1"'],
+      ["project", ["vertex"], "GCP project id"],
+    ] as const) {
+      const owners: readonly string[] = ownerList;
+      const value = raw[field];
+      if (owners.includes(provider)) {
+        if (typeof value !== "string" || value.length === 0) {
+          errors.push(`${at}.${field}: required when provider is "${provider}" (${hint})`);
+          return;
+        }
+      } else if (value !== undefined) {
+        errors.push(`${at}.${field}: only valid when provider is ${owners.map((o) => `"${o}"`).join(" or ")}`);
+        return;
+      }
+    }
     if (raw.baseUrl !== undefined && (typeof raw.baseUrl !== "string" || raw.baseUrl.length === 0)) {
       errors.push(`${at}.baseUrl: must be a non-empty string`);
       return;
@@ -288,6 +306,8 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       apiKeys: (raw.apiKeys as string[] | undefined)?.slice(),
       baseUrl: raw.baseUrl as string | undefined,
       apiVersion: raw.apiVersion as string | undefined,
+      region: raw.region as string | undefined,
+      project: raw.project as string | undefined,
       headers: raw.headers as Record<string, string> | undefined,
       maxRetries: raw.maxRetries as number | undefined,
       timeoutMs: raw.timeoutMs as number | undefined,

@@ -1,0 +1,225 @@
+{
+  "cases": [
+    {
+      "name": "basic converse request",
+      "kind": "bedrock_request",
+      "providerModel": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+      "stream": false,
+      "request": {
+        "model": "claude",
+        "messages": [
+          { "role": "system", "content": "be brief" },
+          { "role": "user", "content": "hi" }
+        ]
+      },
+      "expected": {
+        "messages": [{ "role": "user", "content": [{ "text": "hi" }] }],
+        "system": [{ "text": "be brief" }]
+      }
+    },
+    {
+      "name": "sampling params map to inferenceConfig; stop -> stopSequences",
+      "kind": "bedrock_request",
+      "providerModel": "meta.llama3-70b-instruct-v1:0",
+      "stream": false,
+      "request": {
+        "model": "llama",
+        "messages": [{ "role": "user", "content": "hi" }],
+        "temperature": 0.2,
+        "top_p": 0.9,
+        "max_tokens": 128,
+        "stop": ["END", "###"]
+      },
+      "expected": {
+        "messages": [{ "role": "user", "content": [{ "text": "hi" }] }],
+        "inferenceConfig": {
+          "temperature": 0.2,
+          "topP": 0.9,
+          "maxTokens": 128,
+          "stopSequences": ["END", "###"]
+        }
+      }
+    },
+    {
+      "name": "tools nest under toolConfig.toolSpec with json inputSchema",
+      "kind": "bedrock_request",
+      "providerModel": "m",
+      "stream": false,
+      "request": {
+        "model": "r",
+        "messages": [{ "role": "user", "content": "weather?" }],
+        "tool_choice": { "type": "function", "function": { "name": "get_weather" } },
+        "tools": [
+          {
+            "type": "function",
+            "function": {
+              "name": "get_weather",
+              "description": "current weather",
+              "parameters": { "type": "object", "properties": { "city": { "type": "string" } } }
+            }
+          }
+        ]
+      },
+      "expected": {
+        "messages": [{ "role": "user", "content": [{ "text": "weather?" }] }],
+        "toolConfig": {
+          "tools": [
+            {
+              "toolSpec": {
+                "name": "get_weather",
+                "description": "current weather",
+                "inputSchema": {
+                  "json": { "type": "object", "properties": { "city": { "type": "string" } } }
+                }
+              }
+            }
+          ],
+          "toolChoice": { "tool": { "name": "get_weather" } }
+        }
+      }
+    },
+    {
+      "name": "assistant tool_calls -> toolUse blocks (arguments parsed); tool result -> toolResult",
+      "kind": "bedrock_request",
+      "providerModel": "m",
+      "stream": false,
+      "request": {
+        "model": "r",
+        "messages": [
+          {
+            "role": "assistant",
+            "content": null,
+            "tool_calls": [
+              { "id": "call_1", "type": "function", "function": { "name": "f", "arguments": "{\"x\":7}" } }
+            ]
+          },
+          { "role": "tool", "tool_call_id": "call_1", "content": "done" },
+          { "role": "user", "content": "thanks" }
+        ]
+      },
+      "expected": {
+        "messages": [
+          {
+            "role": "assistant",
+            "content": [{ "toolUse": { "toolUseId": "call_1", "name": "f", "input": { "x": 7 } } }]
+          },
+          {
+            "role": "user",
+            "content": [
+              { "toolResult": { "toolUseId": "call_1", "content": [{ "text": "done" }] } },
+              { "text": "thanks" }
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "name": "converse response: text + usage + end_turn",
+      "kind": "bedrock_response",
+      "providerModel": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+      "response": {
+        "messageId": "msg-abc",
+        "stopReason": "end_turn",
+        "usage": { "inputTokens": 12, "outputTokens": 8, "totalTokens": 20 },
+        "output": {
+          "message": { "role": "assistant", "content": [{ "text": "hello there" }] }
+        }
+      },
+      "expected": {
+        "id": "msg-abc",
+        "model": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+        "provider": "bedrock",
+        "created": 0,
+        "usage": { "prompt_tokens": 12, "completion_tokens": 8, "total_tokens": 20 },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "stop",
+            "message": { "role": "assistant", "content": "hello there" }
+          }
+        ]
+      }
+    },
+    {
+      "name": "converse response: toolUse block maps to tool_calls with stringified args",
+      "kind": "bedrock_response",
+      "providerModel": "m",
+      "response": {
+        "stopReason": "tool_use",
+        "usage": { "inputTokens": 5, "outputTokens": 5, "totalTokens": 10 },
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              { "toolUse": { "toolUseId": "tu_1", "name": "lookup", "input": { "q": "x" } } }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "id": "",
+        "model": "m",
+        "provider": "bedrock",
+        "created": 0,
+        "usage": { "prompt_tokens": 5, "completion_tokens": 5, "total_tokens": 10 },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "tool_calls",
+            "message": {
+              "role": "assistant",
+              "content": null,
+              "tool_calls": [
+                { "id": "tu_1", "type": "function", "function": { "name": "lookup", "arguments": "{\"q\":\"x\"}" } }
+              ]
+            }
+          }
+        ]
+      }
+    },
+    {
+      "name": "converse response: reasoningContent + cache token fields",
+      "kind": "bedrock_response",
+      "providerModel": "m",
+      "response": {
+        "stopReason": "max_tokens",
+        "usage": {
+          "inputTokens": 100,
+          "outputTokens": 50,
+          "totalTokens": 1150,
+          "cacheReadInputTokens": 900,
+          "cacheWriteInputTokens": 100
+        },
+        "output": {
+          "message": {
+            "role": "assistant",
+            "content": [
+              { "reasoningContent": { "text": "pondering" } },
+              { "text": "partial" }
+            ]
+          }
+        }
+      },
+      "expected": {
+        "id": "",
+        "model": "m",
+        "provider": "bedrock",
+        "created": 0,
+        "usage": {
+          "prompt_tokens": 100,
+          "completion_tokens": 50,
+          "total_tokens": 1150,
+          "cached_tokens": 900,
+          "cache_write_tokens": 100
+        },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "length",
+            "message": { "role": "assistant", "content": "partial", "reasoning": "pondering" }
+          }
+        ]
+      }
+    }
+  ]
+}

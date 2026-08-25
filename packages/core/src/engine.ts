@@ -23,13 +23,17 @@ import {
   isRetryableKind,
 } from "./errors.js";
 import type { AttemptRecord, ErrorKind } from "./errors.js";
+import {
+  GuardrailBlockedError,
+  runGuardrails,
+  type Guardrails,
+} from "./guardrails.js";
 import { MemoryStore } from "./limiter/memory.js";
 import type { RateLimitStore } from "./limiter/store.js";
 import { errorMessage, toNetworkError, type FetchLike } from "./http/request.js";
 import { getPreset } from "./providers/presets.js";
 import { getAdapter, isSupported } from "./providers/registry.js";
 import type {
-  AdapterContext,
   NormalizedRoute,
   ProviderAdapter,
   RawRequestOptions,
@@ -93,12 +97,42 @@ export interface CallSummaryEvent {
   cached?: boolean;
 }
 
+/**
+ * Structured lifecycle log, fired via EngineOptions.onLog /
+ * CallOptions.onLog. Covers what onAttempt/onFinish don't: call starts,
+ * cache hits, retry delays, pre-flight skips, guardrail vetoes. Callback
+ * errors are swallowed — logging must never break routing.
+ */
+export type LogEvent =
+  | { type: "call_start"; ts: number; op: "complete" | "stream" | "embed"; model: string }
+  | { type: "cache_hit"; ts: number; model: string }
+  | {
+      type: "route_skip";
+      ts: number;
+      routeId: string;
+      provider: string;
+      reason: "rate_limit" | "budget" | "circuit_open" | "unsupported";
+    }
+  | {
+      type: "attempt_retry";
+      ts: number;
+      routeId: string;
+      provider: string;
+      attempt: number;
+      kind?: ErrorKind;
+      /** Backoff delay about to be slept before the next try. */
+      delayMs?: number;
+    }
+  | { type: "guardrail_block"; ts: number; phase: "input" | "output"; guardrail: string; reason?: string };
+
 /** Per-call options (second argument of complete/stream/embed). */
 export interface CallOptions {
   /** Observability hook: fired for every routing decision and retry. */
   onAttempt?: (event: AttemptEvent) => void;
   /** Observability hook: fired exactly once when the call settles. */
   onFinish?: (summary: CallSummaryEvent) => void;
+  /** Structured lifecycle log for THIS call (engine-level onLog also fires). */
+  onLog?: (event: LogEvent) => void;
   /** Caller-provided abort signal. Cancels in-flight requests when fired. */
   signal?: AbortSignal;
 }
@@ -160,6 +194,18 @@ export interface EngineOptions {
     /** Cache entry lifetime in ms. */
     ttlMs: number;
   };
+  /**
+   * Request/response guardrails. Input guards run once per call before
+   * routing (blocked calls never reach a provider); output guards run on
+   * complete()/embed() results after spend recording. Streams apply input
+   * guards only; raw() bypasses everything.
+   */
+  guardrails?: Guardrails;
+  /**
+   * Structured lifecycle log (call_start, cache_hit, route_skip,
+   * attempt_retry, guardrail_block). Per-call onLog fires in addition.
+   */
+  onLog?: (event: LogEvent) => void;
 }
 
 /** Observability snapshot of engine-internal routing state. */
@@ -191,6 +237,8 @@ export class RoutingEngine {
   private readonly cbMaxCooldownMs: number;
   private readonly pricing?: Record<string, TokenPrice>;
   private readonly responseCache?: EngineOptions["responseCache"];
+  private readonly guardrails?: Guardrails;
+  private readonly onLog?: (event: LogEvent) => void;
   /** Circuit breaker state: consecutive failures per route and when it opens. */
   private readonly cbState = new Map<string, { failures: number; openUntil: number; opens: number }>();
   /** Round-robin cursor so successive requests start on different keys. */
@@ -212,6 +260,26 @@ export class RoutingEngine {
     this.cbMaxCooldownMs = opts.circuitBreaker?.maxCooldownMs ?? this.cbCooldownMs;
     this.pricing = opts.pricing;
     this.responseCache = opts.responseCache;
+    this.guardrails = opts.guardrails;
+    this.onLog = opts.onLog;
+  }
+
+  /**
+   * Fire a lifecycle log event. Callback errors are swallowed — a broken
+   * logger must never break routing.
+   */
+  private emitLog(
+    callOnLog: ((event: LogEvent) => void) | undefined,
+    event: LogEvent,
+  ): void {
+    for (const hook of [this.onLog, callOnLog]) {
+      if (!hook) continue;
+      try {
+        hook(event);
+      } catch {
+        // logging must never break routing
+      }
+    }
   }
 
   async complete(req: ChatRequest, opts: CallOptions = {}): Promise<ChatResponse> {
@@ -223,30 +291,49 @@ export class RoutingEngine {
 
     const attempts: AttemptRecord[] = [];
 
-    // Exact-match response cache (complete only): hash the logical request.
-    if (this.responseCache) {
-      const key = responseCacheKey(req);
-      try {
-        const hit = await this.responseCache.get(key);
-        if (hit) {
-          const cachedResponse = JSON.parse(hit) as ChatResponse;
-          onFinish?.({
-            outcome: "ok",
-            totalMs: Date.now() - startedAt,
-            routeId: cachedResponse.provider,
-            attempts: 0,
-            usage: cachedResponse.usage ?? undefined,
-            costUsd: cachedResponse.cost_usd,
-            cached: true,
-          });
-          return cachedResponse;
-        }
-      } catch {
-        // Cache failures never block routing.
-      }
-    }
-
     try {
+      this.emitLog(opts.onLog, { type: "call_start", ts: Date.now(), op: "complete", model: req.model });
+
+      // Input guardrails run once per logical call, before routing AND
+      // before the cache — a blocked request never reaches any provider.
+      try {
+        req = await runGuardrails("input", this.guardrails?.input, req);
+      } catch (err) {
+        if (err instanceof GuardrailBlockedError) {
+          this.emitLog(opts.onLog, {
+            type: "guardrail_block",
+            ts: Date.now(),
+            phase: "input",
+            guardrail: err.guardrail,
+            ...(err.reason !== undefined ? { reason: err.reason } : {}),
+          });
+        }
+        throw err;
+      }
+
+      // Exact-match response cache (complete only): hash the logical request.
+      if (this.responseCache) {
+        const key = responseCacheKey(req);
+        try {
+          const hit = await this.responseCache.get(key);
+          if (hit) {
+            const cachedResponse = JSON.parse(hit) as ChatResponse;
+            this.emitLog(opts.onLog, { type: "cache_hit", ts: Date.now(), model: req.model });
+            onFinish?.({
+              outcome: "ok",
+              totalMs: Date.now() - startedAt,
+              routeId: cachedResponse.provider,
+              attempts: 0,
+              usage: cachedResponse.usage ?? undefined,
+              costUsd: cachedResponse.cost_usd,
+              cached: true,
+            });
+            return cachedResponse;
+          }
+        } catch {
+          // Cache failures never block routing.
+        }
+      }
       let served: { route: NormalizedRoute; value: ChatResponse; tries: number } | undefined;
 
       for (const route of this.resolveChain(req.model)) {
@@ -258,6 +345,20 @@ export class RoutingEngine {
           };
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -268,6 +369,20 @@ export class RoutingEngine {
           const record = unsupportedAttempt(route, err);
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -276,6 +391,20 @@ export class RoutingEngine {
           const record = overBudget ? skippedBudgetAttempt(route) : skippedRateLimitAttempt(route);
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -283,6 +412,7 @@ export class RoutingEngine {
         const result = await this.attemptWithRetry(
           route, notify, signal,
           (key, tries, keyIndex) => this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify, timing),
+          opts.onLog,
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -295,7 +425,8 @@ export class RoutingEngine {
 
       if (!served) throw new AllRoutesFailedError(attempts);
 
-      const { route, value, tries } = served;
+      const { route } = served;
+      let value = served.value;
       const usage = value.usage;
       if (route.limits.tpm !== undefined && usage) {
         await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
@@ -312,6 +443,22 @@ export class RoutingEngine {
             route.budget.windowMs ?? WINDOW_MS,
           );
         }
+      }
+      // Output guardrails run AFTER spend recording — the provider charged
+      // regardless of the verdict. Blocked outputs do not fall back.
+      try {
+        value = await runGuardrails("output", this.guardrails?.output, value);
+      } catch (err) {
+        if (err instanceof GuardrailBlockedError) {
+          this.emitLog(opts.onLog, {
+            type: "guardrail_block",
+            ts: Date.now(),
+            phase: "output",
+            guardrail: err.guardrail,
+            ...(err.reason !== undefined ? { reason: err.reason } : {}),
+          });
+        }
+        throw err;
       }
       if (this.responseCache) {
         const key = responseCacheKey(req);
@@ -352,12 +499,28 @@ export class RoutingEngine {
     const attempts: AttemptRecord[] = [];
 
     try {
+      this.emitLog(opts.onLog, { type: "call_start", ts: Date.now(), op: "stream", model: req.model });
+      // Input guardrails apply to streams; output guards do NOT (scanning
+      // would require buffering, defeating streaming).
+      try {
+        req = await runGuardrails("input", this.guardrails?.input, req);
+      } catch (err) {
+        if (err instanceof GuardrailBlockedError) {
+          this.emitLog(opts.onLog, {
+            type: "guardrail_block",
+            ts: Date.now(),
+            phase: "input",
+            guardrail: err.guardrail,
+            ...(err.reason !== undefined ? { reason: err.reason } : {}),
+          });
+        }
+        throw err;
+      }
       let served:
         | {
             route: NormalizedRoute;
             iterator: AsyncIterator<ChatChunk>;
             first: ChatChunk;
-            tries: number;
             ttfbMs: number;
           }
         | undefined;
@@ -371,6 +534,20 @@ export class RoutingEngine {
           };
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -381,6 +558,20 @@ export class RoutingEngine {
           const record = unsupportedAttempt(route, err);
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -389,6 +580,20 @@ export class RoutingEngine {
           const record = overBudget ? skippedBudgetAttempt(route) : skippedRateLimitAttempt(route);
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -396,6 +601,7 @@ export class RoutingEngine {
         const result = await this.attemptWithRetry(
           route, notify, signal,
           (key, tries, keyIndex) => this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify, timing),
+          opts.onLog,
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -403,7 +609,6 @@ export class RoutingEngine {
             route,
             iterator: result.value.iterator,
             first: result.value.first,
-            tries: result.tries,
             ttfbMs: timing.latencyMs,
           };
           break;
@@ -414,7 +619,7 @@ export class RoutingEngine {
 
       if (!served) throw new AllRoutesFailedError(attempts);
 
-      const { route, iterator, first, tries, ttfbMs } = served;
+      const { route, iterator, first, ttfbMs } = served;
       onFinish?.({
         outcome: "ok",
         totalMs: Date.now() - startedAt,
@@ -450,6 +655,28 @@ export class RoutingEngine {
     const attempts: AttemptRecord[] = [];
 
     try {
+      this.emitLog(opts.onLog, { type: "call_start", ts: Date.now(), op: "embed", model: req.model });
+      // Input guardrails apply to embedding requests too. Output guards
+      // target ChatResponse shapes and are skipped for embed().
+      try {
+        await runGuardrails("input", this.guardrails?.input, {
+          model: req.model,
+          messages: [
+            { role: "user" as const, content: Array.isArray(req.input) ? req.input.join("\n") : req.input },
+          ],
+        });
+      } catch (err) {
+        if (err instanceof GuardrailBlockedError) {
+          this.emitLog(opts.onLog, {
+            type: "guardrail_block",
+            ts: Date.now(),
+            phase: "input",
+            guardrail: err.guardrail,
+            ...(err.reason !== undefined ? { reason: err.reason } : {}),
+          });
+        }
+        throw err;
+      }
       let served: { route: NormalizedRoute; value: EmbeddingResponse } | undefined;
 
       for (const route of this.resolveChain(req.model)) {
@@ -461,6 +688,20 @@ export class RoutingEngine {
           };
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
@@ -471,6 +712,20 @@ export class RoutingEngine {
           const record = unsupportedAttempt(route, err);
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
         if (!adapter.embed) {
@@ -480,17 +735,39 @@ export class RoutingEngine {
           );
           attempts.push(record);
           notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason:
+              record.outcome === "circuit_open"
+                ? "circuit_open"
+                : record.outcome === "unsupported"
+                  ? "unsupported"
+                  : record.outcome === "skipped_budget"
+                    ? "budget"
+                    : "rate_limit",
+          });
           continue;
         }
 
         if (!(await this.takeBudget(route, estimateEmbeddingTokens(req)))) {
-          attempts.push(skippedRateLimitAttempt(route));
-          notify(attempts[attempts.length - 1]!);
+          const record = skippedRateLimitAttempt(route);
+          attempts.push(record);
+          notify(record);
+          this.emitLog(opts.onLog, {
+            type: "route_skip",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            reason: "rate_limit",
+          });
           continue;
         }
 
         const result = await this.attemptWithRetry(route, notify, signal, (key, tries, keyIndex) =>
-          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify),
+          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify), opts.onLog,
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -678,6 +955,7 @@ export class RoutingEngine {
     notify: Notify,
     signal: AbortSignal | undefined,
     op: (key: string, tries: number, keyIndex: number) => Promise<T>,
+    callOnLog?: (event: LogEvent) => void,
   ): Promise<{ ok: true; value: T; tries: number } | { ok: false; attempt: AttemptRecord }> {
     const maxRetries = route.maxRetries;
     const poolSize = route.keyPool.length;
@@ -719,7 +997,17 @@ export class RoutingEngine {
             outcome: "retry", attempts: tries, keyIndex,
             kind: last.kind, message: last.message,
           });
-          await this.sleep(this.backoffMs(retries, last.retryAfterMs));
+          const delayMs = this.backoffMs(retries, last.retryAfterMs);
+          this.emitLog(callOnLog, {
+            type: "attempt_retry",
+            ts: Date.now(),
+            routeId: route.id,
+            provider: route.provider,
+            attempt: tries,
+            ...(last.kind !== undefined ? { kind: last.kind } : {}),
+            delayMs,
+          });
+          await this.sleep(delayMs);
         } else {
           break;
         }

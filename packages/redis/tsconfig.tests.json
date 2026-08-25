@@ -1,0 +1,13 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "noEmit": true,
+    "noUnusedLocals": true,
+    "types": ["node"],
+    "baseUrl": ".",
+    "paths": {
+      "@ai-router/core": ["../core/src/index.ts"]
+    }
+  },
+  "include": ["src", "tests"]
+}

@@ -1,15 +1,19 @@
 import { UnsupportedProviderError } from "../errors.js";
 import { AnthropicAdapter } from "./anthropic.js";
 import { AzureAdapter } from "./azure.js";
+import { BedrockAdapter } from "./bedrock.js";
 import { GeminiAdapter } from "./gemini.js";
 import { OpenAIAdapter } from "./openai.js";
 import { PROVIDER_PRESETS } from "./presets.js";
 import type { ProviderAdapter } from "./types.js";
+import { VertexAdapter } from "./vertex.js";
 
 const openai = new OpenAIAdapter();
 const azure = new AzureAdapter();
 const anthropic = new AnthropicAdapter();
 const gemini = new GeminiAdapter();
+const bedrock = new BedrockAdapter();
+const vertex = new VertexAdapter();
 
 /**
  * Built-in adapters. "openai-compatible" is the same object as "openai" —
@@ -20,6 +24,8 @@ const builtinAdapters: Record<string, ProviderAdapter> = {
   azure,
   anthropic,
   gemini,
+  bedrock,
+  vertex,
 };
 
 /** Third-party adapters registered via registerAdapter (factory cache). */

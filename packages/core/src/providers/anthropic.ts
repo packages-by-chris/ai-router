@@ -13,7 +13,7 @@
  * - HTTP 529 (overloaded) classifies as retryable "server"
  */
 
-import { ProviderError, classifyStatus, type ErrorKind } from "../errors.js";
+import { ProviderError, type ErrorKind } from "../errors.js";
 import { requireOk, fetchWithTimeout, toNetworkError } from "../http/request.js";
 import { sseData } from "../http/sse.js";
 import type {

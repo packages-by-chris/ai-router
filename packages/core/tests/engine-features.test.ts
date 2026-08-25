@@ -1,7 +1,7 @@
 import { describe, expect, test } from "vitest";
 import { parseConfig } from "../src/config/parse.js";
 import type { RouterConfig } from "../src/config/schema.js";
-import { AllRoutesFailedError, ProviderError } from "../src/errors.js";
+import { AllRoutesFailedError } from "../src/errors.js";
 import { RoutingEngine } from "../src/engine.js";
 import type { AttemptEvent, RouterStats } from "../src/engine.js";
 import { MockFetch, chunkJson, completionJson, jsonResponse, sseResponse } from "./helpers.js";

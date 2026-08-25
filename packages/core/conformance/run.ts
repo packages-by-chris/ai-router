@@ -17,9 +17,11 @@ import {
   runTranslationCase,
   type TranslationHandlers,
 } from "../src/conformance/cases.js";
+import { sseData, streamFromChunks } from "../src/http/sse.js";
 import {
   translateRequest as translateOpenAI,
   translateResponse as translateOpenAIResponse,
+  translateChunk as translateOpenAIChunk,
 } from "../src/providers/openai.js";
 import {
   translateRequest as translateAnthropic,
@@ -29,12 +31,18 @@ import {
   translateRequest as translateGemini,
   translateResponse as translateGeminiResponse,
 } from "../src/providers/gemini.js";
+import {
+  translateRequest as translateBedrock,
+  translateResponse as translateBedrockResponse,
+} from "../src/providers/bedrock.js";
 
 const handlers: TranslationHandlers = {
-  openai_request: ({ request, providerModel, stream }) =>
+  openai_request: ({ request, providerModel, stream, label }) =>
     translateOpenAI(request!, providerModel, stream),
-  openai_response: ({ response, providerModel }) =>
-    translateOpenAIResponse(response, providerModel),
+  openai_response: ({ response, providerModel, label }) =>
+    translateOpenAIResponse(response, providerModel, label),
+  openai_chunk: ({ response, providerModel, label }) =>
+    translateOpenAIChunk(response, providerModel, label),
   anthropic_request: ({ request, providerModel, stream }) =>
     translateAnthropic(request!, providerModel, stream),
   anthropic_response: ({ response, providerModel }) =>
@@ -43,6 +51,19 @@ const handlers: TranslationHandlers = {
     translateGemini(request!, providerModel, stream),
   gemini_response: ({ response, providerModel }) =>
     translateGeminiResponse(response, providerModel),
+  bedrock_request: ({ request, providerModel, stream }) =>
+    translateBedrock(request!, providerModel, stream),
+  bedrock_response: ({ response, providerModel }) =>
+    translateBedrockResponse(response, providerModel),
+  // SSE framing mechanics: `response` is an array of raw network chunks;
+  // expected is the array of `data:` payload strings sseData yields.
+  sse_parse: async ({ response }) => {
+    const out: string[] = [];
+    for await (const data of sseData(streamFromChunks((response as string[]) ?? []))) {
+      out.push(data);
+    }
+    return out;
+  },
 };
 
 const casesDir = join(import.meta.dirname!, "cases");
@@ -55,7 +76,7 @@ for (const file of readdirSync(casesDir).filter((f) => f.endsWith(".json"))) {
   };
   for (const c of suite.cases) {
     total++;
-    const result = runTranslationCase(c, handlers);
+    const result = await runTranslationCase(c, handlers);
     if (result.ok) {
       console.log(`  ok   ${file} :: ${c.name}`);
     } else {

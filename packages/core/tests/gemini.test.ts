@@ -72,7 +72,7 @@ describe("translateRequest", () => {
     const tools = [
       { type: "function" as const, function: { name: "get_weather", description: "w", parameters: { type: "object" } } },
     ];
-    const base = { model: "x", messages: [{ role: "user", content: "hi" }], tools };
+    const base: ChatRequest = { model: "x", messages: [{ role: "user", content: "hi" }], tools };
     expect(translateRequest({ ...base }, "m", false).tools).toEqual([
       { functionDeclarations: [{ name: "get_weather", description: "w", parameters: { type: "object" } }] },
     ]);

@@ -17,8 +17,8 @@ on the shared conformance fixtures.**
 | API surface | Unified OpenAI-compatible shape + per-provider raw escape hatch (planned) |
 | Rate limiting | Pluggable `RateLimitStore`; in-process default, Redis adapter opt-in |
 | Config | Code-first + JSON-serializable `RouterConfig` |
-| Providers v1 | OpenAI + Anthropic + Gemini + any `openai-compatible` base URL |
-| Runtime deps | Zero. `fetch` + WebStreams only (Node 18+, Bun, Deno, edge) |
+| Providers v1 | OpenAI, Anthropic, Gemini, Azure, AWS Bedrock (Converse), Google Vertex, any `openai-compatible` base URL |
+| Runtime deps | Zero. `fetch` + WebStreams + WebCrypto only (Node 18+, Bun, Deno, edge) |
 
 ## Semantics
 
@@ -53,6 +53,17 @@ once the rolling window's spend reaches the cap the route is skipped
 pre-flight (`skipped_budget`) and traffic falls through. Stores without a
 `used()` read-back fail open.
 
+**Guardrails.** Input guards run once per call *before* routing and before
+the response cache — a blocked input never reaches any provider. Output
+guards run after `complete()` succeeds (post spend-recording). Guards may
+block (`pass: false`) or rewrite (`replace`). Streams apply input guards
+only; `raw()` bypasses everything by contract.
+
+**Observability.** Three hooks: `onLog` (structured lifecycle events:
+call_start, cache_hit, route_skip, attempt_retry with backoff delay,
+guardrail_block), `onAttempt` (per routing decision), `onFinish` (settlement
+summary with TTFB, usage, cost). Logger errors never break routing.
+
 **Response cache.** Pass `responseCache` (`get`/`set`/`ttlMs`) to cache
 exact-match `complete()` results by logical request hash. Bring your own
 backing store.
@@ -69,6 +80,18 @@ from provider usage reports (streaming included via
 route. In-process by default — inject a Redis-backed `RateLimitStore` for
 multi-replica deployments.
 
+**Guardrails.** Optional request/response validators that veto or rewrite
+traffic. Input guards run once per call before routing (blocked calls never
+reach a provider, never consume limits); output guards run after a successful
+`complete()` result, post spend-recording. Streams apply input guards only;
+`raw()` bypasses everything. Blocked calls throw `GuardrailBlockedError`
+(phase, guardrail name, reason) and fire an `onLog` event.
+
+**Observability (`onLog`).** Structured lifecycle events — call starts,
+cache hits, route skips with reasons, retry backoffs, guardrail vetoes —
+complementing the existing `onAttempt`/`onFinish` hooks. Callback errors are
+swallowed; logging never breaks routing.
+
 ## Layout
 
 ```
@@ -77,10 +100,12 @@ packages/core/
     config/       schema + validating parser (aggregated error messages)
     http/         fetch w/ timeout, SSE parser (WebStreams)
     limiter/      RateLimitStore interface + sliding-window MemoryStore
-    providers/    ProviderAdapter interface, OpenAI adapter, registry
+    providers/    ProviderAdapter interface, adapters (openai, azure, anthropic,
+                  gemini, bedrock, vertex), presets, registry
+    guardrails.ts input/output validation hooks (block + transform)
     engine.ts     fallback / retry / key-rotation / stream-commit engine
     router.ts     AIRouter facade
-  tests/          vitest suites (46 tests)
+  tests/          vitest suites (190+ tests)
   conformance/    JSON fixtures + runner — the cross-SDK drift guard
 ```
 
@@ -133,34 +158,47 @@ the cache — they read env vars.
 7. ~~Azure OpenAI adapter~~ done — deployment URLs, `api-key` auth, required `apiVersion`; reuses the OpenAI translation wholesale
 8. ~~Routing strategies~~ done — `weighted` (weight-proportional start) and `least-latency` (EMA ordering, exploration-first for unobserved routes)
 9. ~~Budgets + graduated cooldowns + response cache + call summaries~~ done — route `budget.usd` rolling-window enforcement, circuit-breaker cooldown doubling up to `maxCooldownMs`, pluggable exact-match response cache, `onFinish` summary events with TTFB and total latency
-10. Python SDK against the same conformance fixtures
-11. Published JSON Schema for `RouterConfig` — shipped at
-    [`packages/core/schema/router-config.schema.json`](packages/core/schema/router-config.schema.json)
+10. ~~Bedrock adapter~~ done — Converse API across all Bedrock models, hand-rolled SigV4 over WebCrypto, binary event-stream parser, toolUse/toolResult blocks, reasoningContent
+11. ~~Vertex AI adapter~~ done — regional Vertex endpoints, service-account JWT exchange (RS256 over WebCrypto) with token caching or bearer passthrough, shared Gemini translation, `:predict` embeddings
+12. ~~Guardrails~~ done — input/output validators with block + transform verdicts; input runs pre-routing/pre-cache, output post-spend on complete()
+13. ~~onLog observability~~ done — structured lifecycle events (call_start, cache_hit, route_skip, attempt_retry with backoff delays, guardrail_block); engine-level + per-call hooks
+14. ~~Conformance: response + SSE fixtures~~ done — response cases for all adapters (incl. Bedrock), openai chunk-translation cases, `sse_parse` framing cases; runner supports async handlers
+15. ~~Provider presets expansion~~ done — 30+ OpenAI-compatible vendors
+16. Python SDK against the same conformance fixtures
+17. CI/CD pipeline + npm publish
 
 ### Provider presets & custom adapters
 
 `provider` accepts built-in adapters (`openai`, `openai-compatible`,
-`azure`, `anthropic`, `gemini`) plus a **preset catalog** of ~20 vendors
-that serve OpenAI-compatible APIs — groq, deepseek, mistral, openrouter,
-together, fireworks, perplexity, xai, cerebras, sambanova, cohere,
-deepinfra, nvidia, github-models, hyperbolic, novita, nebius, lambda, and
-keyless local runtimes (ollama, lmstudio, vllm):
+`azure`, `anthropic`, `gemini`, `bedrock`, `vertex`) plus a **preset
+catalog** of 30+ vendors that serve OpenAI-compatible APIs — groq, deepseek,
+mistral, openrouter, together, fireworks, perplexity, xai, cerebras,
+sambanova, cohere, deepinfra, nvidia, github-models, hyperbolic, novita,
+nebius, lambda, moonshot, zhipu, yi, stepfun, upstage, ai21, huggingface,
+scaleway, ovhcloud, hunyuan, friendliai, kluster, and keyless local runtimes
+(ollama, lmstudio, vllm):
 
 ```ts
 { id: "fast", provider: "groq", model: "llama-3.3-70b-versatile",
   apiKey: "${GROQ_API_KEY}" }               // baseUrl/auth resolved for you
 { id: "local", provider: "ollama", model: "llama3.2" }  // no key needed
+
+// Cloud enterprise providers:
+{ id: "aws", provider: "bedrock", region: "us-east-1",
+  model: "anthropic.claude-3-5-sonnet-20240620-v1:0",
+  apiKey: "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" }
+{ id: "gcp", provider: "vertex", region: "us-central1", project: "my-proj",
+  model: "gemini-2.0-flash", apiKey: "${GCP_SA_KEY_JSON}" }
 ```
 
 Explicit `baseUrl`/`headers` on the route always win over preset values.
 
-For anything outside the catalog, register a third-party adapter — same
-pattern as `@ai-sdk/*` packages:
+For anything outside the catalog, register a third-party adapter:
 
 ```ts
 import { registerAdapter, knownProviderIds } from "@ai-router/core";
-registerAdapter("bedrock", () => new BedrockAdapter());
-// now valid in configs: { provider: "bedrock", ... }
+registerAdapter("my-gateway", () => new MyGatewayAdapter());
+// now valid in configs: { provider: "my-gateway", ... }
 ```
 
 External adapters can run the conformance fixtures against their own

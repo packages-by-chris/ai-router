@@ -16,7 +16,10 @@ A route's `provider` resolves in three ways, checked in order:
 ## Built-in adapters
 
 ```ts
-const PROVIDER_IDS = ["openai", "openai-compatible", "azure", "anthropic", "gemini"] as const;
+const PROVIDER_IDS = [
+  "openai", "openai-compatible", "azure", "anthropic", "gemini",
+  "bedrock", "vertex",
+] as const;
 ```
 
 ### openai
@@ -81,9 +84,54 @@ parts), `generationConfig`, and finish reasons. `reasoning_effort` maps to
 `response_format: json_schema` becomes `responseMimeType` +
 `responseJsonSchema`.
 
+### bedrock
+
+AWS Bedrock via the **Converse API** — one unified wire shape across all
+Bedrock models (Claude, Llama, Mistral, Titan...). `region` is required;
+SigV4 signing is hand-rolled over WebCrypto (zero runtime deps):
+
+```json
+{ "id": "claude", "provider": "bedrock",
+  "region": "us-east-1",
+  "model": "anthropic.claude-3-5-sonnet-20240620-v1:0",
+  "apiKey": "${AWS_ACCESS_KEY_ID}:${AWS_SECRET_ACCESS_KEY}" }
+```
+
+Notes:
+
+- `apiKey` format: `"ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]"`.
+  Session tokens ride `x-amz-security-token`.
+- Streaming parses the **binary AWS event-stream framing** incrementally —
+  not SSE.
+- Images translate only from base64 data URIs (Converse has no remote-url
+  image source); https image parts are dropped.
+- No embeddings method: Bedrock embedding models use model-specific
+  invoke payloads — use [raw()](/docs/raw-requests) for those.
+- Optional `baseUrl` overrides the derived
+  `https://bedrock-runtime.{region}.amazonaws.com`.
+
+### vertex
+
+Gemini models on Google Cloud Vertex AI. Request/response bodies are
+identical to the Gemini API; auth and URL layout differ. `region` and
+`project` are required:
+
+```json
+{ "id": "gem", "provider": "vertex",
+  "region": "us-central1", "project": "my-proj",
+  "model": "gemini-2.0-flash", "apiKey": "${GCP_SA_KEY_JSON}" }
+```
+
+Auth accepts either a pre-obtained access token or a **service-account JSON
+key** (`"apiKey": "${GCP_SA_KEY}"` where the env var holds the whole JSON).
+SA keys are exchanged via the JWT bearer flow (RS256 over WebCrypto) and
+the resulting token is cached until ~60s before expiry; concurrent callers
+share one in-flight exchange. Embeddings go through Vertex's `:predict`
+endpoint automatically.
+
 ## Preset catalog
 
-~20 vendors serve an OpenAI-compatible API and differ only in URL/auth. Use
+~30 vendors serve an OpenAI-compatible API and differ only in URL/auth. Use
 the preset id as `provider` and skip `baseUrl` entirely:
 
 ```json
@@ -93,9 +141,10 @@ the preset id as `provider` and skip `baseUrl` entirely:
 
 Presets: groq, deepseek, mistral, openrouter, together, fireworks,
 perplexity, xai, cerebras, sambanova, cohere, deepinfra, nvidia,
-github-models, hyperbolic, novita, nebius, lambda — plus keyless local
-runtimes (**ollama**, **lmstudio**, **vllm**), which may omit
-`apiKey`/`apiKeys` entirely.
+github-models, hyperbolic, novita, nebius, lambda, moonshot, zhipu, yi,
+stepfun, upstage, ai21, huggingface, scaleway, ovhcloud, hunyuan,
+friendliai, kluster — plus keyless local runtimes (**ollama**, **lmstudio**,
+**vllm**), which may omit `apiKey`/`apiKeys` entirely.
 
 Explicit `baseUrl` / `headers` on the route always override preset values.
 The catalog lives in `PROVIDER_PRESETS` and is plain data — extendable at
@@ -129,10 +178,9 @@ Register a third-party adapter under any id, then use it like a built-in:
 
 ```ts
 import { registerAdapter, knownProviderIds } from "@ai-router/core";
-import { BedrockAdapter } from "@ai-router/provider-bedrock";
 
-registerAdapter("bedrock", () => new BedrockAdapter());
-// knownProviderIds() now includes "bedrock"; configs may declare it.
+registerAdapter("my-gateway", () => new MyGatewayAdapter());
+// knownProviderIds() now includes "my-gateway"; configs may declare it.
 ```
 
 External adapters can prove their translation with the exported conformance

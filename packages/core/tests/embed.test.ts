@@ -1,6 +1,6 @@
 import { describe, expect, test } from "vitest";
 import { parseConfig } from "../src/config/parse.js";
-import { RoutingEngine } from "../src/engine.js";
+import { RoutingEngine, type AttemptEvent } from "../src/engine.js";
 import { MockFetch, jsonResponse } from "./helpers.js";
 
 const cfg = parseConfig({
@@ -106,7 +106,7 @@ describe("embed fallback machinery", () => {
       ],
     });
     const mock = new MockFetch(jsonResponse(200, { data: [{ index: 0, embedding: [9] }] }));
-    const events = [];
+    const events: AttemptEvent[] = [];
     const engine = new RoutingEngine(withAnthropic, { fetchImpl: mock.fetch });
 
     const res = await engine.embed({ model: "a", input: "hi" }, {

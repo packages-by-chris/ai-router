@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { AllRoutesFailedError, ConfigError, ProviderError, RateLimitedError } from "../src/errors.js";
+import { AllRoutesFailedError, ConfigError, RateLimitedError } from "../src/errors.js";
 import type { AttemptEvent } from "../src/engine.js";
 import { MemoryStore } from "../src/limiter/memory.js";
 import { RoutingEngine } from "../src/engine.js";

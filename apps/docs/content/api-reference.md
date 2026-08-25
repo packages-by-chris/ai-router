@@ -42,11 +42,16 @@ errors aggregate into one `ConfigError`.
 ```ts
 interface CallOptions {
   onAttempt?: (event: AttemptEvent) => void;
+  onFinish?: (summary: CallSummaryEvent) => void;
+  onLog?: (event: LogEvent) => void;
   signal?: AbortSignal;
 }
 ```
 
 - `onAttempt` — fires for every routing decision and retry — see [Routing](/docs/routing).
+- `onFinish` — fires exactly once when the call settles (usage, cost, latency).
+- `onLog` — structured lifecycle events; fires in addition to any
+  engine-level hook — see [Observability](/docs/observability).
 - `signal` — caller-provided abort signal. Cancels in-flight requests when fired.
 
 ## Middleware
@@ -72,18 +77,51 @@ Per-attempt lifecycle hooks — see [Middleware](/docs/middleware).
 
 ```ts
 // Passed as EngineOptions.circuitBreaker
-{ threshold?: number; cooldownMs?: number }
+{ threshold?: number; cooldownMs?: number; maxCooldownMs?: number }
 ```
 
 Skip routes after consecutive failures — see [Circuit breaker](/docs/circuit-breaker).
 
+## Guardrails
+
+```ts
+// Passed as EngineOptions.guardrails — see [Guardrails](/docs/guardrails)
+{
+  input?: InputGuardrail[];   // check(req) -> verdict, before routing
+  output?: OutputGuardrail[]; // check(res) -> verdict, after complete()
+}
+
+interface GuardrailVerdict {
+  pass?: boolean;
+  reason?: string;
+  replace?: unknown;
+}
+```
+
+Blocking throws `GuardrailBlockedError` (extends `AIRouterError`) with
+`phase`, `guardrail`, and `reason`.
+
+## Observability
+
+```ts
+// EngineOptions.onLog / CallOptions.onLog
+type LogEvent =
+  | { type: "call_start"; ts; op; model }
+  | { type: "cache_hit"; ts; model }
+  | { type: "route_skip"; ts; routeId; provider; reason }
+  | { type: "attempt_retry"; ts; routeId; provider; attempt; kind?; delayMs? }
+  | { type: "guardrail_block"; ts; phase; guardrail; reason? };
+```
+
+See [Observability](/docs/observability) for the full event reference.
+
 ## Config types
 
 - `RouterConfig` — `{ routes, strategy?: "fallback" | "round-robin" | "weighted" | "least-latency" }`
-- `ModelRoute` — id, provider, model, apiKey/apiKeys, baseUrl, apiVersion (azure), headers, maxRetries, timeoutMs, streamIdleTimeoutMs, limit, budget, weight
+- `ModelRoute` — id, provider, model, apiKey/apiKeys, baseUrl, apiVersion (azure), region (bedrock/vertex), project (vertex), headers, maxRetries, timeoutMs, streamIdleTimeoutMs, limit, budget, weight
 - `LimitRule` — `{ rpm?, tpm? }`
 - `BudgetRule` — `{ usd, windowMs? }`
-- `PROVIDER_IDS` — built-in adapters: `["openai", "openai-compatible", "azure", "anthropic", "gemini"]`
+- `PROVIDER_IDS` — built-in adapters: `["openai", "openai-compatible", "azure", "anthropic", "gemini", "bedrock", "vertex"]`
 - `PROVIDER_PRESETS`, `getPreset` — the preset catalog (groq, deepseek, ollama, …)
 - `registerAdapter(id, create)`, `knownProviderIds()` — third-party provider registration
 - `parseConfig(input: unknown, env?: Record<string, string | undefined>): RouterConfig` — standalone validation, aggregated errors, `${ENV_VAR}` interpolation

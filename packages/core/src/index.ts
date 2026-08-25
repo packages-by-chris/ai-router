@@ -8,6 +8,7 @@ export type {
   CallOptions,
   CallSummaryEvent,
   EngineOptions,
+  LogEvent,
   Middleware,
   RequestContext,
   RouterStats,
@@ -33,10 +34,36 @@ export {
   isRetryableKind,
 } from "./errors.js";
 export type { AttemptRecord, ErrorKind, ProviderErrorOptions } from "./errors.js";
+export {
+  GuardrailBlockedError,
+  runGuardrails,
+} from "./guardrails.js";
+export type {
+  GuardrailVerdict,
+  Guardrails,
+  InputGuardrail,
+  OutputGuardrail,
+} from "./guardrails.js";
 export { MemoryStore } from "./limiter/memory.js";
 export type { RateLimitDecision, RateLimitStore } from "./limiter/store.js";
 export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, providerLabel as openaiProviderLabel, mergeProviderOptions, usageDetails, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
 export { AzureAdapter, AZURE_DEFAULT_API_VERSION } from "./providers/azure.js";
+export {
+  BedrockAdapter,
+  awsEventStream,
+  mapBedrockStopReason,
+  sigv4Headers,
+  translateRequest as translateBedrockRequest,
+  translateResponse as translateBedrockResponse,
+} from "./providers/bedrock.js";
+export type { AwsEventStreamMessage } from "./providers/bedrock.js";
+export {
+  VertexAdapter,
+  VERTEX_TOKEN_ENDPOINT,
+  VERTEX_TOKEN_SCOPE,
+  clearVertexTokenCache,
+  resolveVertexToken,
+} from "./providers/vertex.js";
 export {
   AnthropicAdapter,
   ANTHROPIC_DEFAULT_BASE_URL,

@@ -151,6 +151,46 @@
           }
         ]
       }
+    },
+    {
+      "name": "response: thinking blocks map to reasoning; cache tokens counted in total",
+      "kind": "anthropic_response",
+      "providerModel": "claude-sonnet-4-6",
+      "response": {
+        "id": "msg_2",
+        "model": "claude-sonnet-4-6",
+        "stop_reason": "max_tokens",
+        "usage": {
+          "input_tokens": 100,
+          "output_tokens": 40,
+          "cache_read_input_tokens": 900,
+          "cache_creation_input_tokens": 50
+        },
+        "content": [
+          { "type": "thinking", "thinking": "hmm" },
+          { "type": "text", "text": "answer" }
+        ]
+      },
+      "expected": {
+        "id": "msg_2",
+        "model": "claude-sonnet-4-6",
+        "provider": "anthropic",
+        "created": 0,
+        "usage": {
+          "prompt_tokens": 100,
+          "completion_tokens": 40,
+          "total_tokens": 1090,
+          "cached_tokens": 900,
+          "cache_write_tokens": 50
+        },
+        "choices": [
+          {
+            "index": 0,
+            "finish_reason": "length",
+            "message": { "role": "assistant", "content": "answer", "reasoning": "hmm" }
+          }
+        ]
+      }
     }
   ]
 }

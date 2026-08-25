@@ -1,6 +1,6 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "$id": "https://raw.githubusercontent.com/leanqdigital/ai-router/main/packages/core/schema/router-config.schema.json",
+  "$id": "https://raw.githubusercontent.com/Packages-by-Chris/ai-router/main/packages/core/schema/router-config.schema.json",
   "title": "RouterConfig",
   "description": "JSON-serializable configuration for @ai-router/core. The Python SDK validates against this same schema.",
   "type": "object",
@@ -25,13 +25,13 @@
       "properties": {
         "id": { "type": "string", "minLength": 1 },
         "provider": {
-          "enum": ["openai", "openai-compatible", "azure", "anthropic", "gemini"],
-          "description": "Built-in adapters, plus any id from the preset catalog (groq, deepseek, mistral, openrouter, together, fireworks, perplexity, xai, cerebras, sambanova, cohere, deepinfra, nvidia, github-models, hyperbolic, novita, nebius, lambda, ollama, lmstudio, vllm) or registered via registerAdapter(). Preset ids resolve baseUrl/auth automatically; keyless presets (ollama, lmstudio, vllm) may omit apiKey/apiKeys."
+          "enum": ["openai", "openai-compatible", "azure", "anthropic", "gemini", "bedrock", "vertex"],
+          "description": "Built-in adapters, plus any id from the preset catalog (groq, deepseek, mistral, openrouter, together, fireworks, perplexity, xai, cerebras, sambanova, cohere, deepinfra, nvidia, github-models, hyperbolic, novita, nebius, lambda, moonshot, zhipu, yi, stepfun, upstage, ai21, huggingface, scaleway, ovhcloud, hunyuan, friendliai, kluster, ollama, lmstudio, vllm) or registered via registerAdapter(). Preset ids resolve baseUrl/auth automatically; keyless presets (ollama, lmstudio, vllm) may omit apiKey/apiKeys. bedrock apiKey format: ACCESS_KEY_ID:SECRET_ACCESS_KEY[:SESSION_TOKEN]. vertex apiKey: an access token OR a service-account JSON key."
         },
         "model": {
           "type": "string",
           "minLength": 1,
-          "description": "Provider-side model name; for azure the deployment name."
+          "description": "Provider-side model name; for azure the deployment name; for bedrock the model id (e.g. anthropic.claude-3-5-sonnet-20240620-v1:0)."
         },
         "apiKey": { "type": "string", "minLength": 1 },
         "apiKeys": {
@@ -42,12 +42,22 @@
         "baseUrl": {
           "type": "string",
           "minLength": 1,
-          "description": "Required for openai-compatible and azure (resource root)."
+          "description": "Required for openai-compatible and azure (resource root). Optional endpoint override for other providers."
         },
         "apiVersion": {
           "type": "string",
           "minLength": 1,
-          "description": "Azure only: API version query parameter, e.g. \"2024-10-21\"."
+          "description": "Azure only: API version query parameter, e.g. \"2024-10-21\". Vertex optional: API path version (default \"v1\")."
+        },
+        "region": {
+          "type": "string",
+          "minLength": 1,
+          "description": "bedrock: AWS region (e.g. \"us-east-1\"). vertex: GCP region (e.g. \"us-central1\")."
+        },
+        "project": {
+          "type": "string",
+          "minLength": 1,
+          "description": "vertex only: GCP project id."
         },
         "headers": {
           "type": "object",
@@ -73,6 +83,14 @@
         {
           "if": { "properties": { "provider": { "const": "azure" } } },
           "then": { "required": ["baseUrl", "apiVersion"] }
+        },
+        {
+          "if": { "properties": { "provider": { "const": "bedrock" } } },
+          "then": { "required": ["region"] }
+        },
+        {
+          "if": { "properties": { "provider": { "const": "vertex" } } },
+          "then": { "required": ["region", "project"] }
         }
       ],
       "anyOf": [

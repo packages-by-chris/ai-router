@@ -27,16 +27,29 @@ export interface TranslationCase {
   stream?: boolean;
   request?: ChatRequest;
   response?: unknown;
+  /**
+   * Provider label used in unified outputs (defaults to each adapter's
+   * native id). Set it to the route's provider id, e.g. "openai-compatible"
+   * for preset-vendored wire traffic.
+   */
+  label?: string;
   expected: unknown;
 }
 
 /**
  * Handlers map case kinds to translation functions. Built-ins cover the
- * shipped adapters; register extra kinds for custom adapters.
+ * shipped adapters; register extra kinds for custom adapters. Handlers may
+ * be async (e.g. SSE parsing over WebStreams).
  */
 export type TranslationHandlers = Record<
   string,
-  (input: { request?: ChatRequest; response?: unknown; providerModel: string; stream: boolean }) => unknown
+  (input: {
+    request?: ChatRequest;
+    response?: unknown;
+    providerModel: string;
+    stream: boolean;
+    label: string;
+  }) => unknown | Promise<unknown>
 >;
 
 export const BUILTIN_TRANSLATION_HANDLERS: TranslationHandlers = {};
@@ -61,10 +74,10 @@ export interface CaseResult {
 }
 
 /** Run one translation case. Never throws; returns a diff-ready result. */
-export function runTranslationCase(
+export async function runTranslationCase(
   c: TranslationCase,
   handlers: TranslationHandlers = BUILTIN_TRANSLATION_HANDLERS,
-): CaseResult {
+): Promise<CaseResult> {
   const handler = handlers[c.kind];
   if (!handler) {
     return {
@@ -74,11 +87,12 @@ export function runTranslationCase(
       actual: `no handler for kind "${c.kind}"`,
     };
   }
-  const actual = handler({
+  const actual = await handler({
     request: c.request,
     response: c.response,
     providerModel: c.providerModel,
     stream: c.stream === true,
+    label: c.label ?? "openai",
   });
   const ok = stable(actual) === stable(c.expected);
   return ok
@@ -87,11 +101,11 @@ export function runTranslationCase(
 }
 
 /** Run a whole suite (one parsed JSON file's `cases` array). */
-export function runTranslationCases(
+export async function runTranslationCases(
   cases: TranslationCase[],
   handlers: TranslationHandlers = BUILTIN_TRANSLATION_HANDLERS,
-): { total: number; failed: number; results: CaseResult[] } {
-  const results = cases.map((c) => runTranslationCase(c, handlers));
+): Promise<{ total: number; failed: number; results: CaseResult[] }> {
+  const results = await Promise.all(cases.map((c) => runTranslationCase(c, handlers)));
   return {
     total: results.length,
     failed: results.filter((r) => !r.ok).length,

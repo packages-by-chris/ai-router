@@ -5,13 +5,21 @@ export interface RecordedCall {
   init: RequestInit | undefined;
 }
 
+/** Scripted response: a fixed Response or a factory receiving the call. */
+export type ResponseFactory = (
+  url: string,
+  init: RequestInit | undefined,
+) => Response | Promise<Response>;
+
 /** Scripted fetch: pops queued responses in order, records every call. */
 export class MockFetch {
   readonly calls: RecordedCall[] = [];
-  private readonly queue: (() => Response)[];
+  private readonly queue: ResponseFactory[];
 
-  constructor(...responses: Array<Response | (() => Response)>) {
-    this.queue = responses.map((r) => (typeof r === "function" ? (r as () => Response) : () => r));
+  constructor(...responses: Array<Response | ResponseFactory>) {
+    this.queue = responses.map((r) =>
+      typeof r === "function" ? (r as ResponseFactory) : () => r,
+    );
   }
 
   readonly fetch: FetchLike = async (url, init) => {

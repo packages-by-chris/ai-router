@@ -5,12 +5,23 @@ pass the **same** JSON fixtures against its own implementation.
 
 ## Contract
 
-- `cases/*.json` — data-driven cases. Current kind: OpenAI request
-  translation (`request` + `providerModel` + `stream` → `expected` body).
-  Future kinds: response translation, SSE chunk sequences, fallback
-  simulations against scripted mock servers.
-- Config validation cases live here too once the JSON Schema for
-  `RouterConfig` is published — both SDKs validate against one schema.
+- `cases/*.json` — data-driven cases. Every case has `name`, `kind`,
+  `providerModel`, and `expected`. Optional inputs per kind:
+
+| Kind | Input | Notes |
+|---|---|---|
+| `openai_request` / `anthropic_request` / `gemini_request` / `bedrock_request` | `request` + `stream` | Unified ChatRequest → provider wire body |
+| `openai_response` / `anthropic_response` / `gemini_response` / `bedrock_response` | `response` | Provider JSON → unified ChatResponse |
+| `openai_chunk` | `response` (+ optional `label`) | Single SSE chunk payload → unified ChatChunk (or `null` for noise) |
+| `sse_parse` | `response` = array of raw network chunk strings | Framing mechanics: yields the array of `data:` payloads |
+
+- The optional `label` field overrides the provider label used in unified
+  outputs (e.g. `"openai-compatible"` for preset vendors whose route id is
+  unknowable from the wire).
+- Handlers may be async; the runner awaits them.
+- Future kinds: fallback simulations against scripted mock servers.
+- Config validation cases live here too once the Python SDK ships — both
+  SDKs validate against the published JSON Schema.
 
 ## Rules
 

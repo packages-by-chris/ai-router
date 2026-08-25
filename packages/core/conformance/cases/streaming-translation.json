@@ -1,0 +1,127 @@
+{
+  "cases": [
+    {
+      "name": "sse: basic data events split across chunks",
+      "kind": "sse_parse",
+      "providerModel": "-",
+      "response": ["data: {\"a\":1}\n\nda", "ta: {\"b\":2}\n\n"],
+      "expected": ["{\"a\":1}", "{\"b\":2}"]
+    },
+    {
+      "name": "sse: CRLF boundaries",
+      "kind": "sse_parse",
+      "providerModel": "-",
+      "response": ["data: one\r\n\r\ndata: two\r\n\r\n"],
+      "expected": ["one", "two"]
+    },
+    {
+      "name": "sse: multi-line data fields join with newline; comments ignored",
+      "kind": "sse_parse",
+      "providerModel": "-",
+      "response": [": keep-alive ping\n\ndata: line1\ndata: line2\n\n"],
+      "expected": ["line1\nline2"]
+    },
+    {
+      "name": "sse: [DONE] sentinel passes through verbatim",
+      "kind": "sse_parse",
+      "providerModel": "-",
+      "response": ["data: [DONE]\n\n"],
+      "expected": ["[DONE]"]
+    },
+    {
+      "name": "openai chunk: content delta",
+      "kind": "openai_chunk",
+      "providerModel": "gpt-4o-mini",
+      "response": {
+        "id": "chatcmpl-9",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o-mini",
+        "choices": [{ "index": 0, "delta": { "role": "assistant", "content": "He" }, "finish_reason": null }]
+      },
+      "expected": {
+        "id": "chatcmpl-9",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "delta": { "role": "assistant", "content": "He" },
+        "finish_reason": null
+      }
+    },
+    {
+      "name": "openai chunk: terminal with usage-bearing payload",
+      "kind": "openai_chunk",
+      "providerModel": "gpt-4o-mini",
+      "response": {
+        "id": "chatcmpl-9",
+        "object": "chat.completion.chunk",
+        "model": "gpt-4o-mini",
+        "choices": [{ "index": 0, "delta": {}, "finish_reason": "stop" }],
+        "usage": { "prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7 }
+      },
+      "expected": {
+        "id": "chatcmpl-9",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "delta": {},
+        "finish_reason": "stop",
+        "usage": { "prompt_tokens": 3, "completion_tokens": 4, "total_tokens": 7 }
+      }
+    },
+    {
+      "name": "openai chunk: reasoning_content delta normalizes to reasoning",
+      "kind": "openai_chunk",
+      "providerModel": "deepseek-chat",
+      "label": "openai-compatible",
+      "label": "openai-compatible",
+      "response": {
+        "id": "chatcmpl-ds",
+        "model": "deepseek-reasoner",
+        "choices": [{ "index": 0, "delta": { "reasoning_content": "thinking" }, "finish_reason": null }]
+      },
+      "expected": {
+        "id": "chatcmpl-ds",
+        "model": "deepseek-reasoner",
+        "provider": "openai-compatible",
+        "delta": { "reasoning": "thinking" },
+        "finish_reason": null
+      }
+    },
+    {
+      "name": "openai chunk: tool call argument deltas pass through",
+      "kind": "openai_chunk",
+      "providerModel": "gpt-4o-mini",
+      "response": {
+        "id": "chatcmpl-tc",
+        "model": "gpt-4o-mini",
+        "choices": [
+          {
+            "index": 0,
+            "delta": {
+              "tool_calls": [
+                { "index": 0, "id": "call_1", "type": "function", "function": { "name": "f", "arguments": "{\"" } }
+              ]
+            },
+            "finish_reason": null
+          }
+        ]
+      },
+      "expected": {
+        "id": "chatcmpl-tc",
+        "model": "gpt-4o-mini",
+        "provider": "openai",
+        "delta": {
+          "tool_calls": [
+            { "index": 0, "id": "call_1", "type": "function", "function": { "name": "f", "arguments": "{\"" } }
+          ]
+        },
+        "finish_reason": null
+      }
+    },
+    {
+      "name": "openai chunk: keep-alive noise (no choices, no usage) yields null",
+      "kind": "openai_chunk",
+      "providerModel": "gpt-4o-mini",
+      "response": { "id": "", "choices": [] },
+      "expected": null
+    }
+  ]
+}

@@ -5,7 +5,15 @@
  */
 
 /** Known provider ids. "openai-compatible" covers any OpenAI-shaped base URL. */
-export const PROVIDER_IDS = ["openai", "openai-compatible", "azure", "anthropic", "gemini"] as const;
+export const PROVIDER_IDS = [
+  "openai",
+  "openai-compatible",
+  "azure",
+  "anthropic",
+  "gemini",
+  "bedrock",
+  "vertex",
+] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export interface LimitRule {
@@ -43,6 +51,13 @@ export interface ModelRoute {
   baseUrl?: string;
   /** Azure only: API version query parameter, e.g. "2024-10-21". */
   apiVersion?: string;
+  /**
+   * bedrock: AWS region (e.g. "us-east-1"). vertex: GCP region
+   * (e.g. "us-central1"). Required for those providers.
+   */
+  region?: string;
+  /** vertex only: GCP project id. Required for vertex. */
+  project?: string;
   headers?: Record<string, string>;
   /** Retries per route (same key or rotated). Default 2. */
   maxRetries?: number;

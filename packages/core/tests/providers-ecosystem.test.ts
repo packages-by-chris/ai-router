@@ -149,8 +149,8 @@ describe("registerAdapter (third-party providers)", () => {
 
   test("unregistered custom provider still rejected at parse time", () => {
     expect(() =>
-      parseConfig({ routes: [{ id: "r", provider: "bedrock", model: "m", apiKey: "k" }] }),
-    ).toThrow(/unknown provider "bedrock"/);
+      parseConfig({ routes: [{ id: "r", provider: "notaprovider", model: "m", apiKey: "k" }] }),
+    ).toThrow(/unknown provider "notaprovider"/);
   });
 });
 
@@ -173,13 +173,13 @@ describe("conformance kit for external adapters", () => {
     }),
   };
 
-  test("runTranslationCases diffs against stable JSON", () => {
-    const { total, failed, results } = runTranslationCases(cases, handlers);
+  test("runTranslationCases diffs against stable JSON", async () => {
+    const { total, failed, results } = await runTranslationCases(cases, handlers);
     expect(total).toBe(1);
     expect(failed).toBe(0);
     expect(results[0]!.ok).toBe(true);
 
-    const broken = runTranslationCases(
+    const broken = await runTranslationCases(
       [{ ...cases[0]!, expected: { model: "m", text: "different" } }],
       handlers,
     );
@@ -187,8 +187,8 @@ describe("conformance kit for external adapters", () => {
     expect(broken.results[0]!.expected).toContain('"text":"different"');
   });
 
-  test("missing handler kind fails cleanly instead of throwing", () => {
-    const { results } = runTranslationCases(cases); // no handlers passed
+  test("missing handler kind fails cleanly instead of throwing", async () => {
+    const { results } = await runTranslationCases(cases); // no handlers passed
     expect(results[0]!.ok).toBe(false);
     expect(results[0]!.actual).toContain("no handler for kind");
   });
