@@ -18,7 +18,7 @@ export class MockFetch {
     this.calls.push({ url, init });
     const next = this.queue.shift();
     if (!next) throw new Error(`MockFetch: no scripted response for ${url}`);
-    return next();
+    return next(url, init);
   };
 
   header(callIndex: number, name: string): string | undefined {

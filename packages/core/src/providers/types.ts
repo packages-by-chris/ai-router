@@ -1,6 +1,12 @@
 import type { ModelRoute } from "../config/schema.js";
 import type { FetchLike } from "../http/request.js";
-import type { ChatChunk, ChatRequest, ChatResponse } from "../types.js";
+import type {
+  ChatChunk,
+  ChatRequest,
+  ChatResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
+} from "../types.js";
 
 /** A validated route with defaults applied. Produced by the engine. */
 export interface NormalizedRoute extends ModelRoute {
@@ -63,4 +69,15 @@ export interface ProviderAdapter {
     opts: RawRequestOptions,
     ctx: AdapterContext,
   ): Promise<Response>;
+  /**
+   * Embeddings, when the provider offers them. Optional: providers without
+   * an embeddings API (e.g. Anthropic) omit it and embedding requests
+   * fall through to the next route.
+   */
+  embed?(
+    route: NormalizedRoute,
+    key: string,
+    req: EmbeddingRequest,
+    ctx: AdapterContext,
+  ): Promise<EmbeddingResponse>;
 }

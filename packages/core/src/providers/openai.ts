@@ -11,12 +11,24 @@ import type {
   ChatRequest,
   ChatResponse,
   Delta,
+  EmbeddingData,
+  EmbeddingRequest,
+  EmbeddingResponse,
   Role,
   Usage,
 } from "../types.js";
 import type { AdapterContext, NormalizedRoute, ProviderAdapter, RawRequestOptions } from "./types.js";
 
 export const OPENAI_DEFAULT_BASE_URL = "https://api.openai.com/v1";
+
+/**
+ * Identity used in unified responses/errors. "openai-compatible" routes are
+ * labeled by route id (the vendor is unknowable from the wire), known
+ * providers by their provider id.
+ */
+export function providerLabel(route: NormalizedRoute): string {
+  return route.provider === "openai-compatible" ? route.id : route.provider;
+}
 
 function baseUrl(route: NormalizedRoute): string {
   return (route.baseUrl ?? OPENAI_DEFAULT_BASE_URL).replace(/\/+$/, "");
@@ -58,6 +70,7 @@ async function request(
   stream: boolean,
   ctx: AdapterContext,
 ): Promise<Response> {
+  const label = providerLabel(route);
   const url = `${baseUrl(route)}/chat/completions`;
   const init: RequestInit = {
     method: "POST",
@@ -70,7 +83,7 @@ async function request(
       signal: ctx.signal,
     });
   } catch (err) {
-    throw toNetworkError("openai", err);
+    throw toNetworkError(label, err);
   }
 }
 
@@ -95,13 +108,17 @@ function toRole(v: unknown): Role {
   return v === "system" || v === "user" || v === "assistant" || v === "tool" ? v : "assistant";
 }
 
-export function translateResponse(json: unknown, providerModel: string): ChatResponse {
+export function translateResponse(
+  json: unknown,
+  providerModel: string,
+  providerLabel = "openai",
+): ChatResponse {
   const j = json as Record<string, unknown>;
   const choicesRaw = Array.isArray(j.choices) ? j.choices : [];
   return {
     id: typeof j.id === "string" ? j.id : "",
     model: typeof j.model === "string" ? j.model : providerModel,
-    provider: "openai",
+    provider: providerLabel,
     created: typeof j.created === "number" ? j.created : 0,
     usage: toUsage(j.usage),
     choices: choicesRaw.map((c, i) => {
@@ -122,7 +139,11 @@ export function translateResponse(json: unknown, providerModel: string): ChatRes
   };
 }
 
-export function translateChunk(json: unknown, providerModel: string): ChatChunk | null {
+export function translateChunk(
+  json: unknown,
+  providerModel: string,
+  providerLabel = "openai",
+): ChatChunk | null {
   const j = json as Record<string, unknown>;
   const choicesRaw = Array.isArray(j.choices) ? j.choices : [];
   const first = choicesRaw[0] as Record<string, unknown> | undefined;
@@ -143,7 +164,7 @@ export function translateChunk(json: unknown, providerModel: string): ChatChunk 
   return {
     id: typeof j.id === "string" ? j.id : "",
     model: typeof j.model === "string" ? j.model : providerModel,
-    provider: "openai",
+    provider: providerLabel,
     delta,
     finish_reason,
     ...(usage ? { usage } : {}),
@@ -160,6 +181,7 @@ export class OpenAIAdapter implements ProviderAdapter {
     opts: RawRequestOptions,
     ctx: AdapterContext,
   ): Promise<Response> {
+    const label = providerLabel(route);
     const url = `${baseUrl(route)}${opts.path ?? "/chat/completions"}`;
     const init: RequestInit = {
       method: opts.method ?? "POST",
@@ -174,7 +196,7 @@ export class OpenAIAdapter implements ProviderAdapter {
         signal: ctx.signal,
       });
     } catch (err) {
-      throw toNetworkError("openai", err);
+      throw toNetworkError(label, err);
     }
   }
 
@@ -184,10 +206,11 @@ export class OpenAIAdapter implements ProviderAdapter {
     req: ChatRequest,
     ctx: AdapterContext,
   ): Promise<ChatResponse> {
+    const label = providerLabel(route);
     const resp = await request(route, key, req, false, ctx);
-    await requireOk(resp, "openai");
+    await requireOk(resp, label);
     const json = await resp.json();
-    return translateResponse(json, route.model);
+    return translateResponse(json, route.model, label);
   }
 
   async stream(
@@ -196,10 +219,11 @@ export class OpenAIAdapter implements ProviderAdapter {
     req: ChatRequest,
     ctx: AdapterContext,
   ): Promise<AsyncIterable<ChatChunk>> {
+    const label = providerLabel(route);
     const resp = await request(route, key, req, true, ctx);
-    await requireOk(resp, "openai");
+    await requireOk(resp, label);
     const body = resp.body;
-    if (!body) throw new ProviderError("openai", "network", "openai: empty stream body");
+    if (!body) throw new ProviderError(label, "network", `${label}: empty stream body`);
     const model = route.model;
     return (async function* () {
       for await (const data of sseData(body)) {
@@ -210,9 +234,47 @@ export class OpenAIAdapter implements ProviderAdapter {
         } catch {
           continue; // tolerate keep-alive noise
         }
-        const chunk = translateChunk(json, model);
+        const chunk = translateChunk(json, model, label);
         if (chunk !== null) yield chunk;
       }
     })();
+  }
+
+  async embed(
+    route: NormalizedRoute,
+    key: string,
+    req: EmbeddingRequest,
+    ctx: AdapterContext,
+  ): Promise<EmbeddingResponse> {
+    const label = providerLabel(route);
+    const url = `${baseUrl(route)}/embeddings`;
+    const init: RequestInit = {
+      method: "POST",
+      headers: headers(route, key),
+      body: JSON.stringify({ model: route.model, input: req.input }),
+    };
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(ctx.fetchImpl, url, init, {
+        timeoutMs: route.timeoutMs,
+        signal: ctx.signal,
+      });
+    } catch (err) {
+      throw toNetworkError(label, err);
+    }
+    await requireOk(resp, label);
+    const j = (await resp.json()) as Record<string, unknown>;
+    const raw = Array.isArray(j.data) ? (j.data as Record<string, unknown>[]) : [];
+    const data: EmbeddingData[] = raw.map((d, i) => ({
+      index: typeof d.index === "number" ? d.index : i,
+      embedding: Array.isArray(d.embedding) ? (d.embedding as number[]) : [],
+    }));
+    return {
+      object: "list",
+      model: typeof j.model === "string" ? j.model : route.model,
+      provider: label,
+      data,
+      usage: toUsage(j.usage),
+    };
   }
 }

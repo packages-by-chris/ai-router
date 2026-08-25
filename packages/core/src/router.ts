@@ -1,8 +1,14 @@
 import { parseConfig } from "./config/parse.js";
 import type { RouterConfig } from "./config/schema.js";
-import { RoutingEngine, type CallOptions, type EngineOptions } from "./engine.js";
+import { RoutingEngine, type CallOptions, type EngineOptions, type RouterStats } from "./engine.js";
 import type { RawRequestOptions } from "./providers/types.js";
-import type { ChatChunk, ChatRequest, ChatResponse } from "./types.js";
+import type {
+  ChatChunk,
+  ChatRequest,
+  ChatResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
+} from "./types.js";
 
 export interface AIRouterOptions extends EngineOptions {}
 
@@ -49,6 +55,14 @@ export class AIRouter {
   }
 
   /**
+   * Embeddings with the same fallback/retry/key-rotation machinery as
+   * complete(). Routes whose provider lacks embeddings support are skipped.
+   */
+  embed(req: EmbeddingRequest, opts: CallOptions = {}): Promise<EmbeddingResponse> {
+    return this.engine.embed(req, opts);
+  }
+
+  /**
    * Raw escape hatch for one route: verbatim body to the provider endpoint,
    * undecorated Response back. Use for anything the unified layer does not
    * model (multimodal, thinking blocks, server tools, new API fields).
@@ -57,5 +71,10 @@ export class AIRouter {
    */
   raw(routeId: string, opts: RawRequestOptions = {}): Promise<Response> {
     return this.engine.raw(routeId, opts);
+  }
+
+  /** Observability snapshot: circuit breakers, key cursors, limiter totals. */
+  stats(): Promise<RouterStats> {
+    return this.engine.stats();
   }
 }

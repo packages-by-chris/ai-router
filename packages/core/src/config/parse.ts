@@ -14,6 +14,24 @@ const PROVIDER_SET: ReadonlySet<string> = new Set(PROVIDER_IDS);
 
 const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
+/** Known fields at each config level; anything else is a typo and rejected. */
+const TOP_LEVEL_FIELDS: ReadonlySet<string> = new Set(["routes", "strategy"]);
+const ROUTE_FIELDS: ReadonlySet<string> = new Set([
+  "id",
+  "provider",
+  "model",
+  "apiKey",
+  "apiKeys",
+  "baseUrl",
+  "headers",
+  "maxRetries",
+  "timeoutMs",
+  "streamIdleTimeoutMs",
+  "limit",
+]);
+const LIMIT_FIELDS: ReadonlySet<string> = new Set(["rpm", "tpm"]);
+const STRATEGIES: ReadonlySet<string> = new Set(["fallback", "round-robin"]);
+
 /**
  * Recursively resolve `${VAR}` patterns in string values.
  * Missing vars throw a clear error.
@@ -69,6 +87,17 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
     throw new ConfigError("config.routes: must not be empty");
   }
 
+  for (const key of Object.keys(interpolated)) {
+    if (!TOP_LEVEL_FIELDS.has(key)) {
+      errors.push(`config.${key}: unknown field (known: routes, strategy)`);
+    }
+  }
+
+  const strategy = interpolated.strategy;
+  if (strategy !== undefined && (typeof strategy !== "string" || !STRATEGIES.has(strategy))) {
+    errors.push('config.strategy: must be "fallback" or "round-robin"');
+  }
+
   const seenIds = new Set<string>();
   const routes: ModelRoute[] = [];
 
@@ -77,6 +106,12 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
     if (!isObject(raw)) {
       errors.push(`${at}: expected an object`);
       return;
+    }
+
+    for (const key of Object.keys(raw)) {
+      if (!ROUTE_FIELDS.has(key)) {
+        errors.push(`${at}.${key}: unknown field`);
+      }
     }
 
     const id = raw.id;
@@ -151,6 +186,7 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
     for (const [field, value] of [
       ["maxRetries", raw.maxRetries],
       ["timeoutMs", raw.timeoutMs],
+      ["streamIdleTimeoutMs", raw.streamIdleTimeoutMs],
     ] as const) {
       if (value !== undefined && !positiveInt(value) && !(field === "maxRetries" && value === 0)) {
         errors.push(`${at}.${field}: must be a positive integer`);
@@ -163,6 +199,11 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       if (!isObject(raw.limit)) {
         errors.push(`${at}.limit: expected an object`);
         return;
+      }
+      for (const key of Object.keys(raw.limit)) {
+        if (!LIMIT_FIELDS.has(key)) {
+          errors.push(`${at}.limit.${key}: unknown field (known: rpm, tpm)`);
+        }
       }
       limit = {};
       if (raw.limit.rpm !== undefined) {
@@ -191,6 +232,7 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       headers: raw.headers as Record<string, string> | undefined,
       maxRetries: raw.maxRetries as number | undefined,
       timeoutMs: raw.timeoutMs as number | undefined,
+      streamIdleTimeoutMs: raw.streamIdleTimeoutMs as number | undefined,
       limit,
     });
   });
@@ -199,5 +241,8 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
     throw new ConfigError(errors.join("\n"));
   }
 
-  return { routes };
+  return {
+    routes,
+    ...(typeof strategy === "string" ? { strategy: strategy as RouterConfig["strategy"] } : {}),
+  };
 }

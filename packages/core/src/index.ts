@@ -2,7 +2,15 @@
 
 export { AIRouter, type AIRouterOptions } from "./router.js";
 export { RoutingEngine, estimateTokens } from "./engine.js";
-export type { AttemptEvent, AttemptOutcome, CallOptions, EngineOptions, Middleware, RequestContext } from "./engine.js";
+export type {
+  AttemptEvent,
+  AttemptOutcome,
+  CallOptions,
+  EngineOptions,
+  Middleware,
+  RequestContext,
+  RouterStats,
+} from "./engine.js";
 export { parseConfig } from "./config/parse.js";
 export type { LimitRule, ModelRoute, ProviderId, RouterConfig } from "./config/schema.js";
 export { PROVIDER_IDS } from "./config/schema.js";
@@ -20,7 +28,7 @@ export {
 export type { AttemptRecord, ErrorKind, ProviderErrorOptions } from "./errors.js";
 export { MemoryStore } from "./limiter/memory.js";
 export type { RateLimitDecision, RateLimitStore } from "./limiter/store.js";
-export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
+export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, providerLabel as openaiProviderLabel, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
 export {
   AnthropicAdapter,
   ANTHROPIC_DEFAULT_BASE_URL,
@@ -39,7 +47,7 @@ export {
 } from "./providers/gemini.js";
 export { getAdapter, isSupported } from "./providers/registry.js";
 export type { AdapterContext, NormalizedRoute, ProviderAdapter, RawRequestOptions } from "./providers/types.js";
-export { parseRetryAfter, fetchWithTimeout, toNetworkError } from "./http/request.js";
+export { parseRetryAfter, fetchWithTimeout, isAbortError, toNetworkError } from "./http/request.js";
 export type { FetchLike } from "./http/request.js";
 export { sseData, streamFromChunks } from "./http/sse.js";
 export { streamText, collectStream } from "./stream.js";
@@ -50,7 +58,11 @@ export type {
   ChatResponse,
   Choice,
   Delta,
+  EmbeddingData,
+  EmbeddingRequest,
+  EmbeddingResponse,
   Role,
+  TokenPrice,
   Tool,
   ToolCall,
   ToolCallDelta,

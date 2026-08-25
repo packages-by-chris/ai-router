@@ -23,6 +23,9 @@ import type {
   ChatRequest,
   ChatResponse,
   Delta,
+  EmbeddingData,
+  EmbeddingRequest,
+  EmbeddingResponse,
   ToolCall,
   Usage,
 } from "../types.js";
@@ -493,5 +496,48 @@ export class GeminiAdapter implements ProviderAdapter {
         };
       }
     })();
+  }
+
+  async embed(
+    route: NormalizedRoute,
+    key: string,
+    req: EmbeddingRequest,
+    ctx: AdapterContext,
+  ): Promise<EmbeddingResponse> {
+    const inputs = Array.isArray(req.input) ? req.input : [req.input];
+    const url = `${baseUrl(route)}/models/${encodeURIComponent(route.model)}:batchEmbedContents`;
+    const init: RequestInit = {
+      method: "POST",
+      headers: headers(route, key),
+      body: JSON.stringify({
+        requests: inputs.map((text) => ({
+          model: `models/${route.model}`,
+          content: { parts: [{ text }] },
+        })),
+      }),
+    };
+    let resp: Response;
+    try {
+      resp = await fetchWithTimeout(ctx.fetchImpl, url, init, {
+        timeoutMs: route.timeoutMs,
+        signal: ctx.signal,
+      });
+    } catch (err) {
+      throw toNetworkError("gemini", err);
+    }
+    await requireOk(resp, "gemini");
+    const j = (await resp.json()) as Record<string, unknown>;
+    const raw = Array.isArray(j.embeddings) ? (j.embeddings as Record<string, unknown>[]) : [];
+    const data: EmbeddingData[] = raw.map((d, i) => ({
+      index: i,
+      embedding: Array.isArray(d.values) ? (d.values as number[]) : [],
+    }));
+    return {
+      object: "list",
+      model: route.model,
+      provider: "gemini",
+      data,
+      usage: toUsage(j.usageMetadata),
+    };
   }
 }

@@ -2,6 +2,11 @@
 
 import { useEffect, useRef, useState } from "react";
 import type { ReactNode } from "react";
+import type { AttemptEvent, ChatFrame, Stats, TestResult } from "@/lib/protocol";
+import type { ServerRouteDTO } from "@/lib/router";
+
+/** Local alias — the server DTO is the single source of truth. */
+type ServerRoute = ServerRouteDTO;
 
 /** Docs site — override with NEXT_PUBLIC_DOCS_URL. */
 const DOCS_URL =
@@ -10,42 +15,12 @@ const DOCS_URL =
     ? "https://airouter.techyatraa.com"
     : "http://localhost:3001");
 
-interface AttemptEvent {
-  routeId: string;
-  provider: string;
-  model: string;
-  outcome: "ok" | "error" | "retry" | "skipped_rate_limit" | "unsupported";
-  attempts: number;
-  keyIndex?: number;
-  kind?: string;
-  message?: string;
-}
-
-interface Stats {
-  provider?: string;
-  model?: string;
-  ttftMs: number;
-  totalMs: number;
-  tokens: number;
-  tps: number;
-}
-
 interface Msg {
   role: "user" | "assistant" | "error";
   content: string;
   events?: AttemptEvent[];
-  finish?: string;
+  finish?: string | null;
   stats?: Stats;
-}
-
-/** What GET /api/config returns per route (keys masked server-side). */
-interface ServerRoute {
-  id: string;
-  provider: string;
-  model: string;
-  baseUrl?: string;
-  limit?: { rpm?: number; tpm?: number };
-  keys: string[];
 }
 
 interface RouteDraft {
@@ -55,19 +30,22 @@ interface RouteDraft {
   apiKey: string;
   baseUrl: string;
   rpm: string;
-}
-
-interface TestResult {
-  id: string;
-  provider: string;
-  model: string;
-  ok: boolean;
-  ms: number;
-  sample?: string;
-  error?: string;
+  tpm: string;
+  maxRetries: string;
+  timeoutMs: string;
 }
 
 const PROVIDERS = ["openai", "anthropic", "gemini", "openai-compatible"];
+
+/** Numeric draft fields → min value + human message. */
+const NUM_FIELDS = {
+  rpm: { min: 1, msg: "The RPM limit needs to be 1 or more." },
+  tpm: { min: 1, msg: "The TPM limit needs to be 1 or more." },
+  maxRetries: { min: 0, msg: "Retries needs to be 0 or more." },
+  timeoutMs: { min: 1, msg: "The timeout needs to be at least 1 ms — try 30000." },
+} as const;
+
+type NumField = keyof typeof NUM_FIELDS;
 
 const emptyDraft = (): RouteDraft => ({
   id: "",
@@ -76,6 +54,9 @@ const emptyDraft = (): RouteDraft => ({
   apiKey: "",
   baseUrl: "",
   rpm: "",
+  tpm: "",
+  maxRetries: "",
+  timeoutMs: "",
 });
 
 /** Markdown-lite: fenced code blocks, `inline code`, **bold**, *italic*, # headings, - lists. */
@@ -217,8 +198,11 @@ function validateDraft(
     errors.baseUrl = "The base URL should start with http:// or https://.";
   }
 
-  if (draft.rpm.trim() && !(Number(draft.rpm) >= 1)) {
-    errors.rpm = "The RPM limit needs to be 1 or more.";
+  for (const field of Object.keys(NUM_FIELDS) as NumField[]) {
+    const value = draft[field].trim();
+    if (value && !(Number(value) >= NUM_FIELDS[field].min)) {
+      errors[field] = NUM_FIELDS[field].msg;
+    }
   }
 
   return errors;
@@ -259,6 +243,7 @@ export default function Page() {
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
   const logRef = useRef<HTMLDivElement>(null);
+  const abortRef = useRef<AbortController | null>(null);
 
   const scrollDown = () =>
     requestAnimationFrame(() =>
@@ -300,6 +285,9 @@ export default function Page() {
       apiKey: "", // blank = keep stored key
       baseUrl: route.baseUrl ?? "",
       rpm: route.limit?.rpm ? String(route.limit.rpm) : "",
+      tpm: route.limit?.tpm ? String(route.limit.tpm) : "",
+      maxRetries: route.maxRetries !== undefined ? String(route.maxRetries) : "",
+      timeoutMs: route.timeoutMs !== undefined ? String(route.timeoutMs) : "",
     });
     setEditingId(route.id);
     setConfigMsg(null);
@@ -325,6 +313,10 @@ export default function Page() {
     setDraftErrors(null);
 
     const isEdit = editingId !== null;
+    const limit: { rpm?: number; tpm?: number } = {};
+    if (draft.rpm.trim()) limit.rpm = Number(draft.rpm);
+    if (draft.tpm.trim()) limit.tpm = Number(draft.tpm);
+
     const route: Record<string, unknown> = {
       id: draft.id.trim(),
       provider: draft.provider,
@@ -332,8 +324,10 @@ export default function Page() {
       ...(isEdit && !draft.apiKey.trim()
         ? { _keepKeyOf: editingId }
         : { apiKey: draft.apiKey.trim() }),
-      ...(draft.baseUrl.trim() ? { baseUrl: dtrim(draft.baseUrl) } : {}),
-      ...(draft.rpm.trim() ? { limit: { rpm: Number(draft.rpm) } } : {}),
+      ...(draft.baseUrl.trim() ? { baseUrl: draft.baseUrl.trim() } : {}),
+      ...(Object.keys(limit).length > 0 ? { limit } : {}),
+      ...(draft.maxRetries.trim() ? { maxRetries: Number(draft.maxRetries) } : {}),
+      ...(draft.timeoutMs.trim() ? { timeoutMs: Number(draft.timeoutMs) } : {}),
     };
 
     const res = await fetch("/api/config", {
@@ -403,7 +397,11 @@ export default function Page() {
       model: route.model,
       _keepKeyOf: route.id,
       ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}),
-      ...(route.limit?.rpm ? { limit: { rpm: route.limit.rpm } } : {}),
+      ...(route.limit?.rpm || route.limit?.tpm
+        ? { limit: { rpm: route.limit.rpm, tpm: route.limit.tpm } }
+        : {}),
+      ...(route.maxRetries !== undefined ? { maxRetries: route.maxRetries } : {}),
+      ...(route.timeoutMs !== undefined ? { timeoutMs: route.timeoutMs } : {}),
     };
 
     const res = await fetch("/api/config", {
@@ -448,7 +446,13 @@ export default function Page() {
     const text = input.trim();
     if (!text || busy) return;
 
-    const history = [...messages, { role: "user" as const, content: text }];
+    // Error bubbles are UI-only — never send them upstream as a turn.
+    const history = [
+      ...messages
+        .filter((m) => m.role !== "error")
+        .map((m) => ({ role: m.role, content: m.content })),
+      { role: "user" as const, content: text },
+    ];
     setMessages([...history, { role: "assistant", content: "", events: [] }]);
     setInput("");
     setBusy(true);
@@ -461,6 +465,9 @@ export default function Page() {
         return next;
       });
 
+    const abort = new AbortController();
+    abortRef.current = abort;
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
@@ -468,6 +475,7 @@ export default function Page() {
         body: JSON.stringify({
           messages: history.map((m) => ({ role: m.role, content: m.content })),
         }),
+        signal: abort.signal,
       });
 
       if (!res.ok || !res.body) {
@@ -489,12 +497,7 @@ export default function Page() {
           const line = buffer.slice(0, nl);
           buffer = buffer.slice(nl + 1);
           if (!line.trim()) continue;
-          const msg = JSON.parse(line) as
-            | ({ type: "event" } & AttemptEvent)
-            | { type: "delta"; text: string }
-            | ({ type: "stats" } & Stats)
-            | { type: "done"; finish: string }
-            | { type: "error"; message: string };
+          const msg = JSON.parse(line) as ChatFrame;
 
           if (msg.type === "event") {
             patchLast((m) => ({ ...m, events: [...(m.events ?? []), msg] }));
@@ -516,8 +519,13 @@ export default function Page() {
         }
       }
     } catch (err) {
-      patchLast(() => ({ role: "error", content: (err as Error).message }));
+      if ((err as Error).name === "AbortError") {
+        patchLast((m) => ({ ...m, finish: m.finish ?? "stopped" }));
+      } else {
+        patchLast(() => ({ role: "error", content: (err as Error).message }));
+      }
     } finally {
+      abortRef.current = null;
       setBusy(false);
       scrollDown();
     }
@@ -528,6 +536,7 @@ export default function Page() {
     error: "failed",
     retry: "retrying",
     skipped_rate_limit: "rate-limited · skip",
+    circuit_open: "circuit open · skip",
     unsupported: "unsupported",
   };
 
@@ -616,7 +625,12 @@ export default function Page() {
                         {r.provider}/{r.model}
                       </div>
                       <div className="ci-meta dim">
-                        {[...r.keys, ...(r.limit?.rpm ? [`rpm ${r.limit.rpm}`] : [])]
+                        {[
+                          r.keys.length > 1 ? `${r.keys.length} keys` : r.keys[0],
+                          ...(r.limit?.rpm ? [`rpm ${r.limit.rpm}`] : []),
+                          ...(r.limit?.tpm ? [`tpm ${r.limit.tpm}`] : []),
+                        ]
+                          .filter(Boolean)
                           .join(" · ") || "—"}
                       </div>
                       {probe && (
@@ -710,12 +724,40 @@ export default function Page() {
                     updateDraft({ rpm: e.target.value.replace(/\D/g, "") })
                   }
                 />
+                <input
+                  className={`cell${draftErrors?.tpm ? " invalid" : ""}`}
+                  placeholder="tpm limit"
+                  aria-label="TPM limit (optional)"
+                  aria-invalid={draftErrors?.tpm ? true : undefined}
+                  value={draft.tpm}
+                  onChange={(e) =>
+                    updateDraft({ tpm: e.target.value.replace(/\D/g, "") })
+                  }
+                />
+                <input
+                  className={`cell${draftErrors?.maxRetries ? " invalid" : ""}`}
+                  placeholder="max retries — default 2"
+                  inputMode="numeric"
+                  aria-label="Max retries (optional)"
+                  aria-invalid={draftErrors?.maxRetries ? true : undefined}
+                  value={draft.maxRetries}
+                  onChange={(e) => updateDraft({ maxRetries: e.target.value })}
+                />
+                <input
+                  className={`cell${draftErrors?.timeoutMs ? " invalid" : ""}`}
+                  placeholder="timeout ms — default 30000"
+                  inputMode="numeric"
+                  aria-label="Timeout in milliseconds (optional)"
+                  aria-invalid={draftErrors?.timeoutMs ? true : undefined}
+                  value={draft.timeoutMs}
+                  onChange={(e) => updateDraft({ timeoutMs: e.target.value })}
+                />
               </div>
 
               {draftErrors && (
                 <div role="alert">
-                  {Object.values(draftErrors).map((msg) => (
-                    <p key={msg} className="config-err">
+                  {Object.values(draftErrors).map((msg, i) => (
+                    <p key={i} className="config-err">
                       {msg}
                     </p>
                   ))}
@@ -844,6 +886,15 @@ export default function Page() {
               }
             }}
           />
+          {busy && (
+            <button
+              className="ghost"
+              type="button"
+              onClick={() => abortRef.current?.abort()}
+            >
+              Stop
+            </button>
+          )}
           <button className="button" type="submit" disabled={busy || !input.trim()}>
             {busy ? "…" : "Send"}
           </button>
@@ -851,10 +902,6 @@ export default function Page() {
       </section>
     </main>
   );
-}
-
-function dtrim(s: string): string {
-  return s.trim();
 }
 
 function stripToInput(r: ServerRoute): Record<string, unknown> {
@@ -866,7 +913,11 @@ function stripToInput(r: ServerRoute): Record<string, unknown> {
     // don't lose credentials
     _keepKeyOf: r.id,
     ...(r.baseUrl ? { baseUrl: r.baseUrl } : {}),
-    ...(r.limit?.rpm ? { limit: { rpm: r.limit.rpm } } : {}),
+    ...(r.limit?.rpm || r.limit?.tpm
+      ? { limit: { rpm: r.limit.rpm, tpm: r.limit.tpm } }
+      : {}),
+    ...(r.maxRetries !== undefined ? { maxRetries: r.maxRetries } : {}),
+    ...(r.timeoutMs !== undefined ? { timeoutMs: r.timeoutMs } : {}),
   };
 }
 

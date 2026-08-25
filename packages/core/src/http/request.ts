@@ -42,16 +42,24 @@ export async function fetchWithTimeout(
   }
 }
 
-/** Wrap a low-level failure into a retryable ProviderError. */
-export function toNetworkError(provider: string, err: unknown): ProviderError {
+/**
+ * Wrap a low-level failure into a retryable ProviderError.
+ * Caller-cancellation AbortErrors are returned unwrapped so the engine can
+ * distinguish "user cancelled" (never retry, never fall back) from
+ * transport failures. Timeout aborts keep the TimeoutError name.
+ */
+export function toNetworkError(provider: string, err: unknown): ProviderError | DOMException {
   if (err instanceof ProviderError) return err;
-  const isTimeout =
-    err instanceof DOMException &&
-    (err.name === "TimeoutError" || err.name === "AbortError") === true &&
-    err.name === "TimeoutError";
+  if (err instanceof DOMException && err.name === "AbortError") return err;
+  const isTimeout = err instanceof DOMException && err.name === "TimeoutError";
   return new ProviderError(provider, isTimeout ? "timeout" : "network", errorMessage(err), {
     cause: err,
   });
+}
+
+/** True when the error is a caller-cancellation abort (never retryable). */
+export function isAbortError(err: unknown): err is DOMException {
+  return err instanceof DOMException && err.name === "AbortError";
 }
 
 /** Read Retry-After (seconds or HTTP-date) as milliseconds. */

@@ -1,15 +1,6 @@
 import { AIRouter } from "@ai-router/core";
+import type { TestResult } from "@/lib/protocol";
 import { getRoutes } from "@/lib/router";
-
-interface TestResult {
-  id: string;
-  provider: string;
-  model: string;
-  ok: boolean;
-  ms: number;
-  sample?: string;
-  error?: string;
-}
 
 /**
  * POST /api/test-chain — health-probes every route in the chain

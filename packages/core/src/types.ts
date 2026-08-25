@@ -74,6 +74,12 @@ export interface Usage {
   total_tokens: number;
 }
 
+/** USD price per 1M tokens, used by engine cost accounting. */
+export interface TokenPrice {
+  input: number;
+  output: number;
+}
+
 export interface ChatResponse {
   id: string;
   model: string;
@@ -82,6 +88,8 @@ export interface ChatResponse {
   created: number;
   choices: Choice[];
   usage: Usage | null;
+  /** Estimated USD cost when `pricing` is configured (route id or model match). */
+  cost_usd?: number;
 }
 
 export interface Choice {
@@ -111,4 +119,29 @@ export interface ChatChunk {
   delta: Delta;
   finish_reason: string | null;
   usage?: Usage;
+  cost_usd?: number;
+}
+
+// ---------------------------------------------------------------- embeddings
+
+/** Logical embedding request. `model` is a route id from the config. */
+export interface EmbeddingRequest {
+  model: string;
+  input: string | string[];
+}
+
+export interface EmbeddingData {
+  index: number;
+  embedding: number[];
+}
+
+export interface EmbeddingResponse {
+  object: "list";
+  model: string;
+  /** Provider that actually served the request (useful after fallback). */
+  provider: string;
+  data: EmbeddingData[];
+  usage: Usage | null;
+  /** Estimated USD cost when `pricing` is configured (route id or model match). */
+  cost_usd?: number;
 }

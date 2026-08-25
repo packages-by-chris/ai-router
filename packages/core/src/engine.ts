@@ -7,6 +7,10 @@
  *   1. retry same route+key (retryable kinds, backoff honoring Retry-After)
  *   2. rotate key on same route (rate_limit / auth / permission)
  *   3. next route in the chain
+ *
+ * Caller cancellation short-circuits everything: once the caller's signal
+ * fires, the original abort error propagates — no retry, no key rotation,
+ * no fallback.
  */
 
 import type { ModelRoute, RouterConfig } from "./config/schema.js";
@@ -29,7 +33,15 @@ import type {
   ProviderAdapter,
   RawRequestOptions,
 } from "./providers/types.js";
-import type { ChatChunk, ChatRequest, ChatResponse } from "./types.js";
+import type {
+  ChatChunk,
+  ChatRequest,
+  ChatResponse,
+  EmbeddingRequest,
+  EmbeddingResponse,
+  TokenPrice,
+  Usage,
+} from "./types.js";
 
 const DEFAULT_MAX_RETRIES = 2;
 const DEFAULT_TIMEOUT_MS = 30_000;
@@ -39,7 +51,13 @@ const BACKOFF_CAP_MS = 8_000;
 const BACKOFF_JITTER = 0.25;
 
 /** What happened at each step of routing a single request. */
-export type AttemptOutcome = "ok" | "error" | "retry" | "skipped_rate_limit" | "unsupported";
+export type AttemptOutcome =
+  | "ok"
+  | "error"
+  | "retry"
+  | "skipped_rate_limit"
+  | "circuit_open"
+  | "unsupported";
 
 export interface AttemptEvent {
   routeId: string;
@@ -53,7 +71,7 @@ export interface AttemptEvent {
   message?: string;
 }
 
-/** Per-call options (second argument of complete/stream). */
+/** Per-call options (second argument of complete/stream/embed). */
 export interface CallOptions {
   /** Observability hook: fired for every routing decision and retry. */
   onAttempt?: (event: AttemptEvent) => void;
@@ -99,6 +117,26 @@ export interface EngineOptions {
    * skip it for `cooldownMs`. Default: disabled.
    */
   circuitBreaker?: { threshold?: number; cooldownMs?: number };
+  /**
+   * USD price per 1M tokens, keyed by route id or provider model name
+   * (route id wins). Enables `cost_usd` on responses and usage-bearing
+   * stream chunks.
+   */
+  pricing?: Record<string, TokenPrice>;
+}
+
+/** Observability snapshot of engine-internal routing state. */
+export interface RouterStats {
+  strategy: "fallback" | "round-robin";
+  circuitBreakers: Array<{
+    routeId: string;
+    failures: number;
+    openUntil: number;
+    open: boolean;
+  }>;
+  keyCursors: Record<string, number>;
+  /** Per-key limiter totals, when the store supports snapshots. */
+  rateLimits: Record<string, number> | null;
 }
 
 export class RoutingEngine {
@@ -109,10 +147,13 @@ export class RoutingEngine {
   private readonly middleware?: Middleware;
   private readonly cbThreshold: number;
   private readonly cbCooldownMs: number;
+  private readonly pricing?: Record<string, TokenPrice>;
   /** Circuit breaker state: consecutive failures per route and when it opens. */
   private readonly cbState = new Map<string, { failures: number; openUntil: number }>();
   /** Round-robin cursor so successive requests start on different keys. */
   private readonly keyCursor = new Map<string, number>();
+  /** Round-robin chain rotation counter (strategy: "round-robin"). */
+  private rrCounter = 0;
 
   constructor(readonly config: RouterConfig, opts: EngineOptions = {}) {
     this.store = opts.store ?? new MemoryStore();
@@ -122,20 +163,22 @@ export class RoutingEngine {
     this.middleware = opts.middleware;
     this.cbThreshold = opts.circuitBreaker?.threshold ?? Infinity;
     this.cbCooldownMs = opts.circuitBreaker?.cooldownMs ?? 30_000;
+    this.pricing = opts.pricing;
   }
 
   async complete(req: ChatRequest, opts: CallOptions = {}): Promise<ChatResponse> {
     const notify = opts.onAttempt ?? noopNotify;
     const signal = opts.signal;
-    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+    if (signal?.aborted) throw abortFrom(signal);
     const chain = this.resolveChain(req.model);
     const attempts: AttemptRecord[] = [];
 
     for (const route of chain) {
+      if (signal?.aborted) throw abortFrom(signal);
       if (this.cbIsOpen(route.id)) {
         const record: AttemptRecord = {
           routeId: route.id, provider: route.provider, model: route.model,
-          outcome: "skipped_rate_limit", attempts: 0, message: "circuit breaker open",
+          outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
         };
         attempts.push(record);
         notify(record);
@@ -152,21 +195,27 @@ export class RoutingEngine {
         continue;
       }
 
-      if (!(await this.takeBudget(route, req))) {
+      if (!(await this.takeBudget(route, estimateTokens(req)))) {
         const record = skippedAttempt(route);
         attempts.push(record);
         notify(record);
         continue;
       }
 
-      const result = await this.attemptRoute(adapter, route, req, notify, signal);
+      const result = await this.attemptWithRetry(
+        route, notify, signal,
+        (key, tries, keyIndex) => this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify),
+      );
       if (result.ok) {
         this.cbRecordSuccess(route.id);
-        const usage = result.value.usage;
+        const value = result.value;
+        const usage = value.usage;
         if (route.limits.tpm !== undefined && usage) {
           await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
         }
-        return result.value;
+        const price = this.priceFor(route);
+        if (price && usage) value.cost_usd = computeCost(usage, price);
+        return value;
       }
       this.cbRecordFailure(route.id);
       attempts.push(result.attempt);
@@ -183,15 +232,16 @@ export class RoutingEngine {
   async stream(req: ChatRequest, opts: CallOptions = {}): Promise<AsyncIterable<ChatChunk>> {
     const notify = opts.onAttempt ?? noopNotify;
     const signal = opts.signal;
-    if (signal?.aborted) throw new DOMException("aborted", "AbortError");
+    if (signal?.aborted) throw abortFrom(signal);
     const chain = this.resolveChain(req.model);
     const attempts: AttemptRecord[] = [];
 
     for (const route of chain) {
+      if (signal?.aborted) throw abortFrom(signal);
       if (this.cbIsOpen(route.id)) {
         const record: AttemptRecord = {
           routeId: route.id, provider: route.provider, model: route.model,
-          outcome: "skipped_rate_limit", attempts: 0, message: "circuit breaker open",
+          outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
         };
         attempts.push(record);
         notify(record);
@@ -208,17 +258,81 @@ export class RoutingEngine {
         continue;
       }
 
-      if (!(await this.takeBudget(route, req))) {
+      if (!(await this.takeBudget(route, estimateTokens(req)))) {
         const record = skippedAttempt(route);
         attempts.push(record);
         notify(record);
         continue;
       }
 
-      const result = await this.attemptStreamRoute(adapter, route, req, notify, signal);
+      const result = await this.attemptWithRetry(
+        route, notify, signal,
+        (key, tries, keyIndex) => this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify),
+      );
       if (result.ok) {
         this.cbRecordSuccess(route.id);
         return result.value;
+      }
+      this.cbRecordFailure(route.id);
+      attempts.push(result.attempt);
+    }
+
+    throw new AllRoutesFailedError(attempts);
+  }
+
+  /**
+   * Embeddings with the same fallback/retry/key-rotation machinery as
+   * complete(). Providers without an embeddings API are recorded as
+   * unsupported attempts and routing falls through to the next route.
+   */
+  async embed(req: EmbeddingRequest, opts: CallOptions = {}): Promise<EmbeddingResponse> {
+    const notify = opts.onAttempt ?? noopNotify;
+    const signal = opts.signal;
+    if (signal?.aborted) throw abortFrom(signal);
+    const chain = this.resolveChain(req.model);
+    const attempts: AttemptRecord[] = [];
+
+    for (const route of chain) {
+      if (signal?.aborted) throw abortFrom(signal);
+      let adapter: ProviderAdapter;
+      try {
+        adapter = getAdapter(route.provider);
+      } catch (err) {
+        const record = unsupportedAttempt(route, err);
+        attempts.push(record);
+        notify(record);
+        continue;
+      }
+      if (!adapter.embed) {
+        const record = unsupportedAttempt(
+          route,
+          new ConfigError(`${route.provider} does not support embeddings`),
+        );
+        attempts.push(record);
+        notify(record);
+        continue;
+      }
+
+      if (!(await this.takeBudget(route, estimateEmbeddingTokens(req)))) {
+        const record = skippedAttempt(route);
+        attempts.push(record);
+        notify(record);
+        continue;
+      }
+
+      const result = await this.attemptWithRetry(route, notify, signal, (key, tries, keyIndex) =>
+        this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify),
+      );
+      if (result.ok) {
+        this.cbRecordSuccess(route.id);
+        const value = result.value;
+        const usage = value.usage;
+        if (route.limits.tpm !== undefined && usage) {
+          await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
+        }
+        const price = this.priceFor(route);
+        if (price && usage) value.cost_usd = computeCost(usage, price);
+        return value;
       }
       this.cbRecordFailure(route.id);
       attempts.push(result.attempt);
@@ -259,7 +373,208 @@ export class RoutingEngine {
     return adapter.raw(normalized, key, opts, { fetchImpl: this.fetchImpl, signal: opts.signal });
   }
 
+  /** Snapshot of circuit-breaker state, key cursors, and limiter totals. */
+  async stats(): Promise<RouterStats> {
+    const rateLimits = this.store.snapshot
+      ? await this.store.snapshot()
+      : null;
+    return {
+      strategy: this.config.strategy ?? "fallback",
+      circuitBreakers: [...this.cbState.entries()].map(([routeId, s]) => ({
+        routeId,
+        failures: s.failures,
+        openUntil: s.openUntil,
+        open: Date.now() < s.openUntil,
+      })),
+      keyCursors: Object.fromEntries(this.keyCursor),
+      rateLimits,
+    };
+  }
+
   // ------------------------------------------------------------------ internals
+
+  private async completeOnce(
+    adapter: ProviderAdapter,
+    route: NormalizedRoute,
+    key: string,
+    tries: number,
+    keyIndex: number,
+    req: ChatRequest,
+    signal: AbortSignal | undefined,
+    notify: Notify,
+  ): Promise<ChatResponse> {
+    await this.fireBeforeRequest(route, req, tries);
+    const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl, signal });
+    await this.fireAfterResponse(route, req, tries, value);
+    notify({
+      routeId: route.id, provider: route.provider, model: route.model,
+      outcome: "ok", attempts: tries, keyIndex,
+    });
+    return value;
+  }
+
+  private async streamCommit(
+    adapter: ProviderAdapter,
+    route: NormalizedRoute,
+    key: string,
+    tries: number,
+    keyIndex: number,
+    req: ChatRequest,
+    signal: AbortSignal | undefined,
+    notify: Notify,
+  ): Promise<AsyncIterable<ChatChunk>> {
+    await this.fireBeforeRequest(route, req, tries);
+    const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl, signal });
+    const iterator = iterable[Symbol.asyncIterator]();
+    const first = route.streamIdleTimeoutMs
+      ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
+      : await iterator.next();
+    if (first.done) {
+      notify({
+        routeId: route.id, provider: route.provider, model: route.model,
+        outcome: "ok", attempts: tries, keyIndex,
+      });
+      return emptyStream();
+    }
+    notify({
+      routeId: route.id, provider: route.provider, model: route.model,
+      outcome: "ok", attempts: tries, keyIndex,
+    });
+    // Fire afterResponse with a synthetic response from first chunk metadata.
+    await this.fireAfterResponse(route, req, tries, {
+      id: first.value.id,
+      model: first.value.model,
+      provider: first.value.provider,
+      created: 0,
+      choices: [{ index: 0, message: { role: first.value.delta.role ?? "assistant", content: first.value.delta.content ?? null }, finish_reason: null }],
+      usage: first.value.usage ?? null,
+    });
+    return this.continueStream(route, iterator, first.value);
+  }
+
+  private async embedOnce(
+    adapter: ProviderAdapter,
+    route: NormalizedRoute,
+    key: string,
+    tries: number,
+    keyIndex: number,
+    req: EmbeddingRequest,
+    signal: AbortSignal | undefined,
+    notify: Notify,
+  ): Promise<EmbeddingResponse> {
+    await this.fireBeforeRequest(route, { model: req.model, messages: [] }, tries);
+    const value = await adapter.embed!(route, key, req, { fetchImpl: this.fetchImpl, signal });
+    notify({
+      routeId: route.id, provider: route.provider, model: route.model,
+      outcome: "ok", attempts: tries, keyIndex,
+    });
+    return value;
+  }
+
+  /**
+   * Shared retry/rotate loop. `op` performs one attempt (hooks + adapter call
+   * + ok notification). Caller cancellation inside `op` or between attempts
+   * propagates immediately — never retried, never falls back.
+   */
+  private async attemptWithRetry<T>(
+    route: NormalizedRoute,
+    notify: Notify,
+    signal: AbortSignal | undefined,
+    op: (key: string, tries: number, keyIndex: number) => Promise<T>,
+  ): Promise<{ ok: true; value: T } | { ok: false; attempt: AttemptRecord }> {
+    const maxRetries = route.maxRetries;
+    const poolSize = route.keyPool.length;
+    let keyIndex = this.nextKeyIndex(route);
+    let tries = 0;
+    let retries = 0;
+    let keysExhausted = 0;
+    let last: ProviderError | undefined;
+
+    for (;;) {
+      if (signal?.aborted) throw abortFrom(signal);
+      const key = route.keyPool[keyIndex % poolSize] as string;
+      tries++;
+      try {
+        return { ok: true, value: await op(key, tries, keyIndex) };
+      } catch (err) {
+        if (signal?.aborted) throw err;
+        last = toProviderError(err, route.provider);
+        // Rate limit / auth / permission: try the next key immediately.
+        // If all keys exhausted (or only one key), fall back to next route.
+        if (isKeyRelatedKind(last.kind)) {
+          keysExhausted++;
+          if (keysExhausted >= poolSize) break;
+          const prevKeyIndex = keyIndex;
+          keyIndex++;
+          notify({
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
+            kind: last.kind, message: last.message,
+          });
+          continue;
+        }
+        if (!isRetryableKind(last.kind)) break;
+        if (retries < maxRetries) {
+          retries++;
+          notify({
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "retry", attempts: tries, keyIndex,
+            kind: last.kind, message: last.message,
+          });
+          await this.sleep(this.backoffMs(retries, last.retryAfterMs));
+        } else {
+          break;
+        }
+      }
+    }
+
+    const attempt = failedAttempt(route, tries, keyIndex, last);
+    notify(attempt);
+    return { ok: false, attempt };
+  }
+
+  private async *continueStream(
+    route: NormalizedRoute,
+    iterator: AsyncIterator<ChatChunk>,
+    first: ChatChunk,
+  ): AsyncGenerator<ChatChunk> {
+    yield first;
+    for (;;) {
+      const next = route.streamIdleTimeoutMs
+        ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
+        : await iterator.next();
+      if (next.done) return;
+      const chunk = next.value;
+      if (chunk.usage && route.limits.tpm !== undefined) {
+        await this.store.record(`${route.id}:tpm`, chunk.usage.total_tokens, WINDOW_MS);
+      }
+      const price = this.priceFor(route);
+      if (price && chunk.usage) chunk.cost_usd = computeCost(chunk.usage, price);
+      yield chunk;
+    }
+  }
+
+  /**
+   * iterator.next() racing an idle timer. On timeout the underlying iterator
+   * gets a best-effort return() and a retryable "timeout" ProviderError is
+   * thrown (pre-commit: triggers fallback; post-commit: surfaces to caller).
+   */
+  private nextWithTimeout(
+    iterator: AsyncIterator<ChatChunk>,
+    ms: number,
+    provider: string,
+  ): Promise<IteratorResult<ChatChunk>> {
+    let timer: ReturnType<typeof setTimeout> | undefined;
+    const timeout = new Promise<never>((_, reject) => {
+      timer = setTimeout(() => {
+        void Promise.resolve()
+          .then(() => iterator.return?.())
+          .catch(() => {});
+        reject(new ProviderError(provider, "timeout", `no stream data for ${ms}ms`));
+      }, ms);
+    });
+    return Promise.race([iterator.next(), timeout]).finally(() => clearTimeout(timer!));
+  }
 
   private resolveChain(model: string): NormalizedRoute[] {
     const index = this.config.routes.findIndex((r) => r.id === model);
@@ -267,19 +582,24 @@ export class RoutingEngine {
       const known = this.config.routes.map((r) => r.id).join(", ");
       throw new ConfigError(`unknown model "${model}" (known route ids: ${known})`);
     }
-    return this.config.routes.slice(index).map(normalizeRoute);
+    const chain = this.config.routes.slice(index).map(normalizeRoute);
+    if (this.config.strategy === "round-robin" && chain.length > 1) {
+      const offset = this.rrCounter++ % chain.length;
+      if (offset > 0) chain.push(...chain.splice(0, offset));
+    }
+    return chain;
   }
 
-  /** Pre-flight budget check. rpm costs 1 request; tpm costs an estimate. */
-  private async takeBudget(route: NormalizedRoute, req: ChatRequest): Promise<boolean> {
+  /** Pre-flight budget check. rpm costs 1 request; tpm costs `tokenCost`. */
+  private async takeBudget(route: NormalizedRoute, tokenCost?: number): Promise<boolean> {
     if (route.limits.rpm !== undefined) {
       const decision = await this.store.take(`${route.id}:rpm`, 1, WINDOW_MS, route.limits.rpm);
       if (!decision.allowed) return false;
     }
-    if (route.limits.tpm !== undefined) {
+    if (route.limits.tpm !== undefined && tokenCost !== undefined) {
       const decision = await this.store.take(
         `${route.id}:tpm`,
-        estimateTokens(req),
+        tokenCost,
         WINDOW_MS,
         route.limits.tpm,
       );
@@ -340,167 +660,14 @@ export class RoutingEngine {
     return false;
   }
 
-  private async attemptRoute(
-    adapter: ProviderAdapter,
-    route: NormalizedRoute,
-    req: ChatRequest,
-    notify: Notify,
-    signal?: AbortSignal,
-  ): Promise<{ ok: true; value: ChatResponse } | { ok: false; attempt: AttemptRecord }> {
-    const maxRetries = route.maxRetries;
-    const poolSize = route.keyPool.length;
-    let keyIndex = this.nextKeyIndex(route);
-    let tries = 0;
-    let retries = 0;
-    let keysExhausted = 0;
-    let last: ProviderError | undefined;
-
-    for (;;) {
-      const key = route.keyPool[keyIndex % poolSize] as string;
-      tries++;
-      try {
-        await this.fireBeforeRequest(route, req, tries);
-        const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl, signal });
-        await this.fireAfterResponse(route, req, tries, value);
-        notify({
-          routeId: route.id, provider: route.provider, model: route.model,
-          outcome: "ok", attempts: tries, keyIndex,
-        });
-        return { ok: true, value };
-      } catch (err) {
-        last = toProviderError(err, route.provider);
-        // Rate limit / auth / permission: try the next key immediately.
-        // If all keys exhausted (or only one key), fall back to next route.
-        if (isKeyRelatedKind(last.kind)) {
-          keysExhausted++;
-          if (keysExhausted >= poolSize) break;
-          const prevKeyIndex = keyIndex;
-          keyIndex++;
-          notify({
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
-            kind: last.kind, message: last.message,
-          });
-          continue;
-        }
-        if (!isRetryableKind(last.kind)) break;
-        if (retries < maxRetries) {
-          retries++;
-          notify({
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex,
-            kind: last.kind, message: last.message,
-          });
-          await this.sleep(this.backoffMs(retries, last.retryAfterMs));
-        } else {
-          break;
-        }
-      }
-    }
-
-    const attempt = failedAttempt(route, tries, keyIndex, last);
-    notify(attempt);
-    return { ok: false, attempt };
-  }
-
-  private async attemptStreamRoute(
-    adapter: ProviderAdapter,
-    route: NormalizedRoute,
-    req: ChatRequest,
-    notify: Notify,
-    signal?: AbortSignal,
-  ): Promise<{ ok: true; value: AsyncIterable<ChatChunk> } | { ok: false; attempt: AttemptRecord }> {
-    const maxRetries = route.maxRetries;
-    const poolSize = route.keyPool.length;
-    let keyIndex = this.nextKeyIndex(route);
-    let tries = 0;
-    let retries = 0;
-    let keysExhausted = 0;
-    let last: ProviderError | undefined;
-
-    for (;;) {
-      const key = route.keyPool[keyIndex % poolSize] as string;
-      tries++;
-      try {
-        await this.fireBeforeRequest(route, req, tries);
-        const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl, signal });
-        const iterator = iterable[Symbol.asyncIterator]();
-        const first = await iterator.next();
-        if (first.done) {
-          notify({
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "ok", attempts: tries, keyIndex,
-          });
-          return { ok: true, value: emptyStream() };
-        }
-        notify({
-          routeId: route.id, provider: route.provider, model: route.model,
-          outcome: "ok", attempts: tries, keyIndex,
-        });
-        // Fire afterResponse with a synthetic response from first chunk metadata.
-        await this.fireAfterResponse(route, req, tries, {
-          id: first.value.id,
-          model: first.value.model,
-          provider: first.value.provider,
-          created: 0,
-          choices: [{ index: 0, message: { role: first.value.delta.role ?? "assistant", content: first.value.delta.content ?? null }, finish_reason: null }],
-          usage: first.value.usage ?? null,
-        });
-        return { ok: true, value: this.continueStream(route, first.value, iterator) };
-      } catch (err) {
-        last = toProviderError(err, route.provider);
-        if (isKeyRelatedKind(last.kind)) {
-          keysExhausted++;
-          if (keysExhausted >= poolSize) break;
-          const prevKeyIndex = keyIndex;
-          keyIndex++;
-          notify({
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
-            kind: last.kind, message: last.message,
-          });
-          continue;
-        }
-        if (!isRetryableKind(last.kind)) break;
-        if (retries < maxRetries) {
-          retries++;
-          notify({
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex,
-            kind: last.kind, message: last.message,
-          });
-          await this.sleep(this.backoffMs(retries, last.retryAfterMs));
-        } else {
-          break;
-        }
-      }
-    }
-
-    const attempt = failedAttempt(route, tries, keyIndex, last);
-    notify(attempt);
-    return { ok: false, attempt };
-  }
-
-  private async *continueStream(
-    route: NormalizedRoute,
-    first: ChatChunk,
-    iterator: AsyncIterator<ChatChunk>,
-  ): AsyncGenerator<ChatChunk> {
-    yield first;
-    for (;;) {
-      const next = await iterator.next();
-      if (next.done) return;
-      if (next.value.usage && route.limits.tpm !== undefined) {
-        await this.store.record(`${route.id}:tpm`, next.value.usage.total_tokens, WINDOW_MS);
-      }
-      yield next.value;
-    }
-  }
-
   private nextKeyIndex(route: NormalizedRoute): number {
     const cursor = this.keyCursor.get(route.id) ?? 0;
     this.keyCursor.set(route.id, cursor + 1);
     return cursor;
+  }
+
+  private priceFor(route: NormalizedRoute): TokenPrice | undefined {
+    return this.pricing?.[route.id] ?? this.pricing?.[route.model];
   }
 
   /** Exponential backoff with jitter; a server Retry-After raises the floor. */
@@ -528,7 +695,7 @@ function normalizeRoute(route: ModelRoute): NormalizedRoute {
 
 /** Pre-hoc token estimate for tpm gating. ~3.5 chars/token (tighter than the
  *  4-char rule to avoid undercounting on code/JSON) + per-message overhead. */
-export function estimateTokens(req: ChatRequest): number {
+export function estimateTokens(req: Pick<ChatRequest, "messages" | "tools">): number {
   let chars = 0;
   for (const msg of req.messages) {
     chars += 4; // role + separators
@@ -552,9 +719,18 @@ export function estimateTokens(req: ChatRequest): number {
   return Math.ceil(chars / 3.5) + 1;
 }
 
-function toProviderError(err: unknown, provider: string): ProviderError {
-  if (err instanceof ProviderError) return err;
-  return toNetworkError(provider, err);
+/** Same heuristic as estimateTokens, for embedding inputs. */
+function estimateEmbeddingTokens(req: EmbeddingRequest): number {
+  const chars = Array.isArray(req.input) ? req.input.join("").length : req.input.length;
+  return Math.ceil(chars / 3.5) + 1;
+}
+
+function toProviderError(err: unknown, provider: string): ProviderError {  if (err instanceof ProviderError) return err;
+  const wrapped = toNetworkError(provider, err);
+  // Caller-cancellation aborts are returned unwrapped by toNetworkError;
+  // reaching here means the abort raced past the signal check — propagate.
+  if (wrapped instanceof ProviderError) return wrapped;
+  throw wrapped;
 }
 
 function failedAttempt(
@@ -572,6 +748,7 @@ function failedAttempt(
     keyIndex,
     kind: last?.kind,
     message: last ? last.message : undefined,
+    ...(last?.retryAfterMs !== undefined ? { retryAfterMs: last.retryAfterMs } : {}),
   };
 }
 
@@ -598,4 +775,16 @@ function unsupportedAttempt(route: NormalizedRoute, err: unknown): AttemptRecord
 
 function emptyStream(): AsyncIterable<ChatChunk> {
   return (async function* () {})();
+}
+
+/** USD cost from token usage and per-1M-token pricing, rounded to 6 decimals. */
+function computeCost(usage: Usage, price: TokenPrice): number {
+  const usd =
+    (usage.prompt_tokens / 1_000_000) * price.input +
+    (usage.completion_tokens / 1_000_000) * price.output;
+  return Math.round(usd * 1e6) / 1e6;
+}
+
+function abortFrom(signal: AbortSignal): unknown {
+  return signal.reason ?? new DOMException("This operation was aborted", "AbortError");
 }

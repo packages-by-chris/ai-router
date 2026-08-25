@@ -43,6 +43,16 @@ export class MemoryStore implements RateLimitStore {
     list.push({ ts: this.now(), cost });
   }
 
+  /** Sum of retained (non-stale) entries per key. Approximate across mixed windows. */
+  snapshot(): Record<string, number> {
+    const out: Record<string, number> = {};
+    for (const [key, list] of this.entries) {
+      if (list.length === 0) continue;
+      out[key] = list.reduce((sum, e) => sum + e.cost, 0);
+    }
+    return out;
+  }
+
   private maybePruneAll(windowMs: number): void {
     this.calls++;
     if (this.calls < this.pruneInterval) return;

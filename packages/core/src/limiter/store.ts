@@ -14,4 +14,9 @@ export interface RateLimitDecision {
 export interface RateLimitStore {
   take(key: string, cost: number, windowMs: number, limit: number): Promise<RateLimitDecision>;
   record(key: string, cost: number, windowMs: number): Promise<void>;
+  /**
+   * Approximate per-key usage totals for observability (`engine.stats()`).
+   * Optional: stores that cannot enumerate keys return nothing here.
+   */
+  snapshot?(): Promise<Record<string, number>> | Record<string, number>;
 }

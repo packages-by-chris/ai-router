@@ -32,6 +32,12 @@ export interface ModelRoute {
   maxRetries?: number;
   /** Per-attempt HTTP timeout. Default 30000. */
   timeoutMs?: number;
+  /**
+   * Max silence between stream chunks (ms). Fires pre-commit (enabling
+   * fallback) and post-commit (surfaces to the caller as a "timeout"
+   * ProviderError). Default: disabled.
+   */
+  streamIdleTimeoutMs?: number;
   limit?: LimitRule;
 }
 
@@ -41,4 +47,12 @@ export interface RouterConfig {
    * i, i+1, ... in order.
    */
   routes: ModelRoute[];
+  /**
+   * Route selection across the chain.
+   * - "fallback" (default): strict order — chain[0] is primary until it fails.
+   * - "round-robin": each request rotates the starting point of the chain
+   *   cyclically. Only meaningful when tail routes are interchangeable
+   *   replicas of the primary.
+   */
+  strategy?: "fallback" | "round-robin";
 }

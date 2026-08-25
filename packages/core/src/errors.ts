@@ -68,19 +68,30 @@ export interface AttemptRecord {
   routeId: string;
   provider: string;
   model: string;
-  outcome: "error" | "skipped_rate_limit" | "unsupported";
+  outcome: "error" | "skipped_rate_limit" | "circuit_open" | "unsupported";
   attempts: number;
   keyIndex?: number;
   kind?: ErrorKind;
   message?: string;
+  /** Provider-advertised retry delay (Retry-After), when reported. */
+  retryAfterMs?: number;
 }
 
 export class AllRoutesFailedError extends AIRouterError {
   readonly attempts: AttemptRecord[];
+  /**
+   * Soonest provider-advertised retry opportunity across the failed routes
+   * (min of Retry-After values). Undefined when no provider reported one.
+   */
+  readonly retryAfterMs?: number;
 
   constructor(attempts: AttemptRecord[]) {
     super(`all routes failed (${attempts.length} attempted)`);
     this.attempts = attempts;
+    const delays = attempts
+      .map((a) => a.retryAfterMs)
+      .filter((d): d is number => typeof d === "number");
+    if (delays.length > 0) this.retryAfterMs = Math.min(...delays);
   }
 }
 

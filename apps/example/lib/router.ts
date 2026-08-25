@@ -1,4 +1,12 @@
-import { AIRouter, ConfigError, parseConfig, type ModelRoute } from "@ai-router/core";
+import {
+  AIRouter,
+  ConfigError,
+  parseConfig,
+  type LimitRule,
+  type ModelRoute,
+  type ProviderId,
+  type RouterConfig,
+} from "@ai-router/core";
 
 /**
  * Router state for the demo.
@@ -19,25 +27,24 @@ interface RouterState {
 
 const g = globalThis as typeof globalThis & { __aiRouterState?: RouterState };
 
+/** Single source of truth for router options — used by every construction site. */
+function makeRouter(config: RouterConfig): AIRouter {
+  return new AIRouter(config, {
+    circuitBreaker: { threshold: 5, cooldownMs: 30_000 },
+    middleware: {
+      beforeRequest(ctx) {
+        console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
+      },
+      afterResponse(ctx, res) {
+        console.log(`[ai-router] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
+      },
+    },
+  });
+}
+
 function ensure(): RouterState {
   if (!g.__aiRouterState) {
-    g.__aiRouterState = {
-      router: new AIRouter(
-        { routes: [] },
-        {
-          circuitBreaker: { threshold: 5, cooldownMs: 30_000 },
-          middleware: {
-            beforeRequest(ctx) {
-              console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
-            },
-            afterResponse(ctx, res) {
-              console.log(`[ai-router] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
-            },
-          },
-        },
-      ),
-      routes: [],
-    };
+    g.__aiRouterState = { router: makeRouter({ routes: [] }), routes: [] };
   }
   return g.__aiRouterState;
 }
@@ -105,17 +112,7 @@ export function setConfig(input: unknown): SetConfigResult {
   try {
     const config = parseConfig(reattachStoredKeys(input));
     g.__aiRouterState = {
-      router: new AIRouter(config, {
-        circuitBreaker: { threshold: 5, cooldownMs: 30_000 },
-        middleware: {
-          beforeRequest(ctx) {
-            console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
-          },
-          afterResponse(ctx, res) {
-            console.log(`[ai-router] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
-          },
-        },
-      }),
+      router: makeRouter(config),
       routes: config.routes,
     };
     return { ok: true, routes: config.routes };
@@ -143,8 +140,20 @@ function mask(key: string): string {
   return key.length <= 8 ? "•••" : `${key.slice(0, 4)}…${key.slice(-4)}`;
 }
 
+/** What GET /api/config returns per route (keys masked server-side). */
+export interface ServerRouteDTO {
+  id: string;
+  provider: ProviderId;
+  model: string;
+  baseUrl?: string;
+  maxRetries?: number;
+  timeoutMs?: number;
+  limit?: LimitRule;
+  keys: string[];
+}
+
 /** Current routes with keys masked — safe to send to the UI. */
-export function describeRoutes(): Array<Record<string, unknown>> {
+export function describeRoutes(): ServerRouteDTO[] {
   return ensure().routes.map((r) => ({
     id: r.id,
     provider: r.provider,

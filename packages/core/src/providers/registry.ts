@@ -23,9 +23,7 @@ const adapters: Record<string, ProviderAdapter> = {
 export function getAdapter(providerId: string): ProviderAdapter {
   const adapter = adapters[providerId];
   if (!adapter) {
-    throw new UnsupportedProviderError(
-      `provider "${providerId}" is not implemented yet (planned: anthropic, gemini)`,
-    );
+    throw new UnsupportedProviderError(`provider "${providerId}" is not implemented`);
   }
   return adapter;
 }

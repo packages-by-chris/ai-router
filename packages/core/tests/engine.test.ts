@@ -45,7 +45,7 @@ describe("RoutingEngine.complete", () => {
     const engine = new RoutingEngine(config(), { fetchImpl: mock.fetch, sleep: noopSleep });
 
     const res = await engine.complete(req);
-    expect(res.provider).toBe("openai");
+    expect(res.provider).toBe("b"); // openai-compatible routes are labeled by route id
     expect(mock.calls).toHaveLength(2);
     expect(mock.calls[0]!.url).toContain("api.openai.com");
     expect(mock.calls[1]!.url).toContain("b.example");
