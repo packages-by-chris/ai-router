@@ -79,20 +79,28 @@ Skip routes after consecutive failures — see [Circuit breaker](/docs/circuit-b
 
 ## Config types
 
-- `RouterConfig` — `{ routes: ModelRoute[] }`
-- `ModelRoute` — id, provider, model, apiKey/apiKeys, baseUrl, headers, maxRetries, timeoutMs, limit
+- `RouterConfig` — `{ routes, strategy?: "fallback" | "round-robin" | "weighted" | "least-latency" }`
+- `ModelRoute` — id, provider, model, apiKey/apiKeys, baseUrl, apiVersion (azure), headers, maxRetries, timeoutMs, streamIdleTimeoutMs, limit, budget, weight
 - `LimitRule` — `{ rpm?, tpm? }`
-- `PROVIDER_IDS` — `["openai", "openai-compatible", "anthropic", "gemini"]`
+- `BudgetRule` — `{ usd, windowMs? }`
+- `PROVIDER_IDS` — built-in adapters: `["openai", "openai-compatible", "azure", "anthropic", "gemini"]`
+- `PROVIDER_PRESETS`, `getPreset` — the preset catalog (groq, deepseek, ollama, …)
+- `registerAdapter(id, create)`, `knownProviderIds()` — third-party provider registration
 - `parseConfig(input: unknown, env?: Record<string, string | undefined>): RouterConfig` — standalone validation, aggregated errors, `${ENV_VAR}` interpolation
 
 ## Unified request/response types
 
 OpenAI-shaped, on purpose:
 
-- **Requests** — `ChatRequest`, `ChatMessage`, `Role`, `Tool`, `ToolCall`,
-  `ContentPart` (`TextPart` \| `ImageUrlPart`)
-- **Responses** — `ChatResponse`, `Choice`, `Usage`
-- **Streams** — `ChatChunk`, `Delta`, `ToolCallDelta`
+- **Requests** — `ChatRequest` (incl. `reasoning_effort`, `response_format`
+  with `json_schema`, `providerOptions`), `ChatMessage` (incl.
+  `reasoning`, message-level `providerOptions`), `Role`, `Tool`, `ToolCall`,
+  `ContentPart` (`TextPart` \| `ImageUrlPart`), `ResponseFormat`,
+  `ProviderOptions`
+- **Responses** — `ChatResponse`, `Choice`, `Usage` (incl. `cached_tokens`,
+  `cache_write_tokens`, `reasoning_tokens`), `TokenPrice` (with optional
+  `cache_read` / `cache_write` tiers)
+- **Streams** — `ChatChunk`, `Delta` (incl. `reasoning`), `ToolCallDelta`
 
 Shapes are documented page by page under [Core concepts](/docs/configuration).
 
@@ -106,8 +114,17 @@ Shapes are documented page by page under [Core concepts](/docs/configuration).
 ## Routing engine
 
 `RoutingEngine` is exported for advanced use (it is what `AIRouter` wraps),
-along with `estimateTokens`, and the types `AttemptEvent`, `AttemptOutcome`,
-`CallOptions`, `EngineOptions`, `Middleware`, `RequestContext`.
+along with `estimateTokens`, `computeCost`, and the types `AttemptEvent`,
+`AttemptOutcome`, `CallSummaryEvent`, `CallOptions` (with `onFinish`),
+`EngineOptions` (incl. `pricing`, `responseCache`, `circuitBreaker.maxCooldownMs`),
+`Middleware`, `RequestContext`, `RouterStats`.
+
+## Conformance kit
+
+- `runTranslationCases(cases, handlers?)`, `runTranslationCase`, `stableJson`
+- Types: `TranslationCase`, `TranslationHandlers`, `CaseResult`
+- For third-party adapter authors proving translation parity — see
+  [Conformance](/docs/conformance).
 
 ## Stream utilities
 
@@ -128,10 +145,11 @@ along with `estimateTokens`, and the types `AttemptEvent`, `AttemptOutcome`,
 
 Exported per provider for testing/custom pipelines:
 
-- OpenAI: `OpenAIAdapter`, `OPENAI_DEFAULT_BASE_URL`, `translateRequest`, `translateResponse`, `translateChunk`
-- Anthropic: `AnthropicAdapter`, `ANTHROPIC_DEFAULT_BASE_URL`, `ANTHROPIC_VERSION` (`2023-06-01`), `ANTHROPIC_DEFAULT_MAX_TOKENS` (4096), `translateAnthropicRequest`, `translateAnthropicResponse`, `mapAnthropicFinishReason`
-- Gemini: `GeminiAdapter`, `GEMINI_DEFAULT_BASE_URL`, `translateGeminiRequest`, `translateGeminiResponse`, `mapGeminiFinishReason`
-- Registry: `getAdapter`, `isSupported`; adapter types `ProviderAdapter`, `NormalizedRoute`, `AdapterContext`, `RawRequestOptions`
+- OpenAI: `OpenAIAdapter`, `OPENAI_DEFAULT_BASE_URL`, `translateRequest`, `translateResponse`, `translateChunk`, `mergeProviderOptions`, `usageDetails`
+- Azure: `AzureAdapter`, `AZURE_DEFAULT_API_VERSION`
+- Anthropic: `AnthropicAdapter`, `ANTHROPIC_DEFAULT_BASE_URL`, `ANTHROPIC_VERSION` (`2023-06-01`), `ANTHROPIC_DEFAULT_MAX_TOKENS` (4096), `ANTHROPIC_THINKING_BUDGETS`, `translateAnthropicRequest`, `translateAnthropicResponse`, `mapAnthropicFinishReason`
+- Gemini: `GeminiAdapter`, `GEMINI_DEFAULT_BASE_URL`, `GEMINI_THINKING_BUDGETS`, `translateGeminiRequest`, `translateGeminiResponse`, `mapGeminiFinishReason`
+- Registry: `getAdapter`, `isSupported`, `registerAdapter`, `knownProviderIds`; adapter types `ProviderAdapter`, `NormalizedRoute`, `AdapterContext`, `RawRequestOptions`
 
 ## @ai-router/redis
 
@@ -140,7 +158,7 @@ Exported per provider for testing/custom pipelines:
 | `RedisStore` | `RateLimitStore` over Redis ZSETs, Lua-atomic. Options: `client`, `prefix?`, `failOpen?`, `onError?`, `now?`. |
 | `ioredisClient(client)` | Adapt ioredis to `RedisEvalClient`. |
 | `nodeRedisClient(client)` | Adapt node-redis v4+ to `RedisEvalClient`. |
-| `TAKE_SCRIPT`, `RECORD_SCRIPT` | The Lua scripts, exposed for audit/pipelining. |
+| `TAKE_SCRIPT`, `RECORD_SCRIPT`, `USED_SCRIPT` | The Lua scripts, exposed for audit/pipelining. `used()` powers budget pre-flight checks. |
 | `RedisEvalClient` | Minimal interface: `eval(script, keys, args)` — implement for Upstash etc. |
 
 Details: [Rate limiting](/docs/rate-limiting).

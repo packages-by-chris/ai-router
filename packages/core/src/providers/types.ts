@@ -10,6 +10,13 @@ import type {
 
 /** A validated route with defaults applied. Produced by the engine. */
 export interface NormalizedRoute extends ModelRoute {
+  /**
+   * Adapter id resolved from `provider` (preset ids expand to their wire
+   * family's adapter; built-in and registered ids map to themselves).
+   */
+  adapterId?: string;
+  /** Auth header name override (from a preset's `{ header }` auth). */
+  authHeaderName?: string;
   keyPool: string[];
   headers: Record<string, string>;
   maxRetries: number;

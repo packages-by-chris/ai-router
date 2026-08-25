@@ -26,26 +26,43 @@ problems listed — useful when the config comes from a user-facing form.
 ```ts
 interface RouterConfig {
   routes: ModelRoute[];
+  strategy?: "fallback" | "round-robin" | "weighted" | "least-latency";
 }
 ```
 
 `routes` is an **ordered fallback chain**. A request for route id at index `i`
 tries routes `i`, `i+1`, … in order until one succeeds.
 
+`strategy` changes how the chain start is picked — see
+[Routing](/docs/routing).
+
 ## ModelRoute
 
 | Field | Type | Description |
 | --- | --- | --- |
 | `id` | `string` | Logical name requests refer to (`model` field). Must be unique. |
-| `provider` | `ProviderId` | `"openai"` \| `"openai-compatible"` \| `"anthropic"` \| `"gemini"` |
-| `model` | `string` | Provider-side model name, e.g. `"gpt-4o-mini"`. |
-| `apiKey?` | `string` | Single key (convenience). |
+| `provider` | `ProviderId` | Built-in id, [preset](/docs/providers) id (groq, deepseek, ollama, …), or a registered adapter id. |
+| `model` | `string` | Provider-side model name (for `azure`: the deployment name). |
+| `apiKey?` | `string` | Single key (convenience). Optional for keyless presets. |
 | `apiKeys?` | `string[]` | Key pool. Merged with `apiKey`; rotates on rate_limit / auth / permission. |
-| `baseUrl?` | `string` | Required for `"openai-compatible"`; overrides the default for known providers. |
-| `headers?` | `Record<string, string>` | Extra headers merged over adapter defaults. |
+| `baseUrl?` | `string` | Required for `"openai-compatible"` and `"azure"`; overrides preset defaults otherwise. |
+| `apiVersion?` | `string` | Azure only — required, e.g. `"2024-10-21"`. |
+| `headers?` | `Record<string, string>` | Extra headers merged over adapter/preset defaults. |
 | `maxRetries?` | `number` | Retries per route (same key or rotated). Default `2`. |
 | `timeoutMs?` | `number` | Per-attempt HTTP timeout. Default `30000`. |
-| `limit?` | `LimitRule` | Route rate limit — see [Rate limiting](/docs/rate-limiting). |
+| `streamIdleTimeoutMs?` | `number` | Max silence between stream chunks; pre-commit enables fallback. Default off. |
+| `limit?` | `LimitRule` | rpm/tpm rate limit — see [Rate limiting](/docs/rate-limiting). |
+| `budget?` | `BudgetRule` | Rolling-window USD spend cap — see [Rate limiting](/docs/rate-limiting). |
+| `weight?` | `number` | Relative traffic share under `strategy: "weighted"` (default 1). |
+
+## BudgetRule
+
+```ts
+interface BudgetRule {
+  usd: number;        // max spend across the window (needs pricing)
+  windowMs?: number;  // default 60000
+}
+```
 
 ## LimitRule
 
@@ -125,9 +142,8 @@ A fallback chain mixing providers:
 {
   "routes": [
     { "id": "fast", "provider": "openai", "model": "gpt-4o-mini", "apiKey": "..." },
-    { "id": "cheap", provider: "openai-compatible", "baseUrl": "https://api.deepseek.com/v1",
-      "model": "deepseek-chat", "apiKey": "..." },
-    { "id": "backup", provider: "gemini", "model": "gemini-2.0-flash", "apiKey": "..." }
+    { "id": "cheap", "provider": "deepseek", "model": "deepseek-chat", "apiKey": "..." },
+    { "id": "local", "provider": "ollama", "model": "llama3.2" }
   ]
 }
 ```

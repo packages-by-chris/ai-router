@@ -4,7 +4,6 @@ import {
   parseConfig,
   type LimitRule,
   type ModelRoute,
-  type ProviderId,
   type RouterConfig,
 } from "@ai-router/core";
 
@@ -143,7 +142,8 @@ function mask(key: string): string {
 /** What GET /api/config returns per route (keys masked server-side). */
 export interface ServerRouteDTO {
   id: string;
-  provider: ProviderId;
+  /** Built-in id, preset id, or registered adapter id. */
+  provider: string;
   model: string;
   baseUrl?: string;
   maxRetries?: number;

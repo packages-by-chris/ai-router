@@ -211,6 +211,8 @@ export class OpenAIAdapter implements ProviderAdapter {
   }
 
   protected authHeaders(route: NormalizedRoute, key: string): Record<string, string> {
+    // Presets may redirect the key into a named header (non-Bearer vendors).
+    if (route.authHeaderName) return { [route.authHeaderName]: key };
     void route;
     return { authorization: `Bearer ${key}` };
   }

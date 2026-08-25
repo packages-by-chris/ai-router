@@ -8,9 +8,9 @@
  */
 
 import { ConfigError } from "../errors.js";
-import { PROVIDER_IDS, type ModelRoute, type RouterConfig } from "./schema.js";
-
-const PROVIDER_SET: ReadonlySet<string> = new Set(PROVIDER_IDS);
+import { knownProviderIds } from "../providers/registry.js";
+import { getPreset } from "../providers/presets.js";
+import type { ModelRoute, RouterConfig } from "./schema.js";
 
 const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
@@ -137,9 +137,9 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
     seenIds.add(id);
 
     const provider = raw.provider;
-    if (typeof provider !== "string" || !PROVIDER_SET.has(provider)) {
+    if (typeof provider !== "string" || !knownProviderIds().includes(provider)) {
       errors.push(
-        `${at}.provider: unknown provider ${JSON.stringify(provider)} (known: ${PROVIDER_IDS.join(", ")})`,
+        `${at}.provider: unknown provider ${JSON.stringify(provider)} (known: ${knownProviderIds().join(", ")})`,
       );
       return;
     }
@@ -170,8 +170,12 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       keyPool.push(...raw.apiKeys);
     }
     if (keyPool.length === 0) {
-      errors.push(`${at}: needs "apiKey" or "apiKeys"`);
-      return;
+      // Keyless routes are only valid for presets that declare no-auth
+      // (local runtimes like ollama/vLLM).
+      if (getPreset(provider)?.auth !== "none") {
+        errors.push(`${at}: needs "apiKey" or "apiKeys"`);
+        return;
+      }
     }
 
     if (provider === "openai-compatible" && (typeof raw.baseUrl !== "string" || raw.baseUrl.length === 0)) {

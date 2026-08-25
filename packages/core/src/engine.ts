@@ -26,7 +26,8 @@ import type { AttemptRecord, ErrorKind } from "./errors.js";
 import { MemoryStore } from "./limiter/memory.js";
 import type { RateLimitStore } from "./limiter/store.js";
 import { errorMessage, toNetworkError, type FetchLike } from "./http/request.js";
-import { getAdapter } from "./providers/registry.js";
+import { getPreset } from "./providers/presets.js";
+import { getAdapter, isSupported } from "./providers/registry.js";
 import type {
   AdapterContext,
   NormalizedRoute,
@@ -262,7 +263,7 @@ export class RoutingEngine {
 
         let adapter: ProviderAdapter;
         try {
-          adapter = getAdapter(route.provider);
+          adapter = getAdapter(route.adapterId ?? route.provider);
         } catch (err) {
           const record = unsupportedAttempt(route, err);
           attempts.push(record);
@@ -375,7 +376,7 @@ export class RoutingEngine {
 
         let adapter: ProviderAdapter;
         try {
-          adapter = getAdapter(route.provider);
+          adapter = getAdapter(route.adapterId ?? route.provider);
         } catch (err) {
           const record = unsupportedAttempt(route, err);
           attempts.push(record);
@@ -465,7 +466,7 @@ export class RoutingEngine {
 
         let adapter: ProviderAdapter;
         try {
-          adapter = getAdapter(route.provider);
+          adapter = getAdapter(route.adapterId ?? route.provider);
         } catch (err) {
           const record = unsupportedAttempt(route, err);
           attempts.push(record);
@@ -540,7 +541,7 @@ export class RoutingEngine {
       throw new ConfigError(`unknown route id "${routeId}" (known route ids: ${known})`);
     }
     const normalized = normalizeRoute(route);
-    const adapter = getAdapter(normalized.provider);
+    const adapter = getAdapter(normalized.adapterId ?? normalized.provider);
 
     if (normalized.limits.rpm !== undefined) {
       const decision = await this.store.take(
@@ -943,10 +944,23 @@ function normalizeRoute(route: ModelRoute): NormalizedRoute {
     ...(route.apiKey ? [route.apiKey] : []),
     ...(route.apiKeys ?? []),
   ];
+  // Keyless routes are valid only for no-auth presets (ollama, vLLM, ...);
+  // a placeholder keeps the rotation cursor arithmetic safe.
+  if (keyPool.length === 0) keyPool.push("");
+
+  // Preset expansion: `provider: "groq"` resolves to its wire-family
+  // adapter + published baseUrl/auth without any per-route configuration.
+  const preset = getPreset(route.provider);
+  const adapterId = isSupported(route.provider) ? route.provider : preset?.adapter;
+
   return {
     ...route,
+    adapterId,
+    authHeaderName:
+      preset && typeof preset.auth === "object" ? preset.auth.header : undefined,
+    baseUrl: route.baseUrl ?? preset?.baseUrl,
+    headers: { ...(preset?.headers ?? {}), ...(route.headers ?? {}) },
     keyPool,
-    headers: route.headers ?? {},
     maxRetries: route.maxRetries ?? DEFAULT_MAX_RETRIES,
     timeoutMs: route.timeoutMs ?? DEFAULT_TIMEOUT_MS,
     limits: { rpm: route.limit?.rpm, tpm: route.limit?.tpm },

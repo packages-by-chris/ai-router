@@ -137,6 +137,36 @@ the cache — they read env vars.
 11. Published JSON Schema for `RouterConfig` — shipped at
     [`packages/core/schema/router-config.schema.json`](packages/core/schema/router-config.schema.json)
 
+### Provider presets & custom adapters
+
+`provider` accepts built-in adapters (`openai`, `openai-compatible`,
+`azure`, `anthropic`, `gemini`) plus a **preset catalog** of ~20 vendors
+that serve OpenAI-compatible APIs — groq, deepseek, mistral, openrouter,
+together, fireworks, perplexity, xai, cerebras, sambanova, cohere,
+deepinfra, nvidia, github-models, hyperbolic, novita, nebius, lambda, and
+keyless local runtimes (ollama, lmstudio, vllm):
+
+```ts
+{ id: "fast", provider: "groq", model: "llama-3.3-70b-versatile",
+  apiKey: "${GROQ_API_KEY}" }               // baseUrl/auth resolved for you
+{ id: "local", provider: "ollama", model: "llama3.2" }  // no key needed
+```
+
+Explicit `baseUrl`/`headers` on the route always win over preset values.
+
+For anything outside the catalog, register a third-party adapter — same
+pattern as `@ai-sdk/*` packages:
+
+```ts
+import { registerAdapter, knownProviderIds } from "@ai-router/core";
+registerAdapter("bedrock", () => new BedrockAdapter());
+// now valid in configs: { provider: "bedrock", ... }
+```
+
+External adapters can run the conformance fixtures against their own
+translation functions via the exported kit
+(`runTranslationCases`, `stableJson`, types from `@ai-router/core`).
+
 ### providerOptions escape hatch
 
 Per-request extras ride along with translation/retries/fallback (unlike

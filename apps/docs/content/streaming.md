@@ -24,10 +24,12 @@ interface ChatChunk {
   model: string;
   /** Provider that actually served the request. */
   provider: string;
-  delta: Delta; // { role?, content?, tool_calls? }
+  delta: Delta; // { role?, content?, reasoning?, tool_calls? }
   finish_reason: string | null;
   /** Appears on the final chunk when the provider reports usage. */
-  usage?: Usage;
+  usage?: Usage; // may include cached_tokens / cache_write_tokens / reasoning_tokens
+  /** Present when `pricing` is configured for the route. */
+  cost_usd?: number;
 }
 ```
 

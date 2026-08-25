@@ -55,7 +55,20 @@ export {
   translateRequest as translateGeminiRequest,
   translateResponse as translateGeminiResponse,
 } from "./providers/gemini.js";
-export { getAdapter, isSupported } from "./providers/registry.js";
+export { getAdapter, isSupported, registerAdapter, knownProviderIds } from "./providers/registry.js";
+export { PROVIDER_PRESETS, getPreset } from "./providers/presets.js";
+export type { PresetAuth, ProviderPreset } from "./providers/presets.js";
+export {
+  BUILTIN_TRANSLATION_HANDLERS,
+  runTranslationCase,
+  runTranslationCases,
+  stable as stableJson,
+} from "./conformance/cases.js";
+export type {
+  CaseResult,
+  TranslationCase,
+  TranslationHandlers,
+} from "./conformance/cases.js";
 export type { AdapterContext, NormalizedRoute, ProviderAdapter, RawRequestOptions } from "./providers/types.js";
 export { parseRetryAfter, fetchWithTimeout, isAbortError, toNetworkError } from "./http/request.js";
 export type { FetchLike } from "./http/request.js";

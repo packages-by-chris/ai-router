@@ -4,16 +4,19 @@
  * own implementation — that is the drift guard for the multi-language
  * contract (see /conformance/README.md).
  *
- * Case kinds:
- *   - openai_request:    unified request      -> OpenAI body
- *   - anthropic_request: unified request      -> Anthropic body
- *   - anthropic_response: Anthropic message   -> unified response
+ * The reusable core lives in src/conformance/cases.ts and is exported from
+ * the package so third-party adapter authors can run the same fixture
+ * format against their own translations.
  *
  * Run: npm run conformance (or: npx tsx conformance/run.ts)
  */
 
 import { readdirSync, readFileSync } from "node:fs";
 import { join } from "node:path";
+import {
+  runTranslationCase,
+  type TranslationHandlers,
+} from "../src/conformance/cases.js";
 import {
   translateRequest as translateOpenAI,
   translateResponse as translateOpenAIResponse,
@@ -26,71 +29,40 @@ import {
   translateRequest as translateGemini,
   translateResponse as translateGeminiResponse,
 } from "../src/providers/gemini.js";
-import type { ChatRequest } from "../src/types.js";
 
-type CaseKind =
-  | "openai_request"
-  | "openai_response"
-  | "anthropic_request"
-  | "anthropic_response"
-  | "gemini_request"
-  | "gemini_response";
-
-interface Case {
-  name: string;
-  kind: CaseKind;
-  providerModel: string;
-  stream?: boolean;
-  request?: ChatRequest;
-  response?: unknown;
-  expected: unknown;
-}
-
-/** Deterministic JSON for diffing (sorted keys, no whitespace). */
-function stable(value: unknown): string {
-  if (Array.isArray(value)) return `[${value.map(stable).join(",")}]`;
-  if (typeof value === "object" && value !== null) {
-    const entries = Object.entries(value as Record<string, unknown>)
-      .filter(([, v]) => v !== undefined)
-      .sort(([a], [b]) => (a < b ? -1 : 1));
-    return `{${entries.map(([k, v]) => `${JSON.stringify(k)}:${stable(v)}`).join(",")}}`;
-  }
-  return JSON.stringify(value);
-}
-
-function actualFor(c: Case): unknown {
-  switch (c.kind) {
-    case "openai_request":
-      return translateOpenAI(c.request!, c.providerModel, c.stream === true);
-    case "openai_response":
-      return translateOpenAIResponse(c.response, c.providerModel);
-    case "anthropic_request":
-      return translateAnthropic(c.request!, c.providerModel, c.stream === true);
-    case "anthropic_response":
-      return translateAnthropicResponse(c.response, c.providerModel);
-    case "gemini_request":
-      return translateGemini(c.request!, c.providerModel, c.stream === true);
-    case "gemini_response":
-      return translateGeminiResponse(c.response, c.providerModel);
-  }
-}
+const handlers: TranslationHandlers = {
+  openai_request: ({ request, providerModel, stream }) =>
+    translateOpenAI(request!, providerModel, stream),
+  openai_response: ({ response, providerModel }) =>
+    translateOpenAIResponse(response, providerModel),
+  anthropic_request: ({ request, providerModel, stream }) =>
+    translateAnthropic(request!, providerModel, stream),
+  anthropic_response: ({ response, providerModel }) =>
+    translateAnthropicResponse(response, providerModel),
+  gemini_request: ({ request, providerModel, stream }) =>
+    translateGemini(request!, providerModel, stream),
+  gemini_response: ({ response, providerModel }) =>
+    translateGeminiResponse(response, providerModel),
+};
 
 const casesDir = join(import.meta.dirname!, "cases");
 let total = 0;
 let failed = 0;
 
 for (const file of readdirSync(casesDir).filter((f) => f.endsWith(".json"))) {
-  const suite = JSON.parse(readFileSync(join(casesDir, file), "utf8")) as { cases: Case[] };
+  const suite = JSON.parse(readFileSync(join(casesDir, file), "utf8")) as {
+    cases: Parameters<typeof runTranslationCase>[0][];
+  };
   for (const c of suite.cases) {
     total++;
-    const ok = stable(actualFor(c)) === stable(c.expected);
-    if (ok) {
+    const result = runTranslationCase(c, handlers);
+    if (result.ok) {
       console.log(`  ok   ${file} :: ${c.name}`);
     } else {
       failed++;
       console.log(`  FAIL ${file} :: ${c.name}`);
-      console.log(`    expected: ${stable(c.expected)}`);
-      console.log(`    actual:   ${stable(actualFor(c))}`);
+      console.log(`    expected: ${result.expected}`);
+      console.log(`    actual:   ${result.actual}`);
     }
   }
 }

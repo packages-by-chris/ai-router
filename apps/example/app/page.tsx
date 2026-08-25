@@ -35,7 +35,25 @@ interface RouteDraft {
   timeoutMs: string;
 }
 
-const PROVIDERS = ["openai", "anthropic", "gemini", "openai-compatible"];
+const PROVIDERS = [
+  "openai",
+  "azure",
+  "anthropic",
+  "gemini",
+  "openai-compatible",
+  // preset catalog picks — full list in @ai-router/core PROVIDER_PRESETS
+  "groq",
+  "deepseek",
+  "openrouter",
+  "mistral",
+  "together",
+  "xai",
+  "perplexity",
+  "ollama", // keyless local runtime
+];
+
+/** Presets that need no API key at all. */
+const KEYLESS_PROVIDERS = new Set(["ollama", "lmstudio", "vllm"]);
 
 /** Numeric draft fields → min value + human message. */
 const NUM_FIELDS = {
@@ -186,7 +204,11 @@ function validateDraft(
     errors.model = "Add the model this stop should call — e.g. gpt-4o-mini.";
   }
 
-  if (editingId === null && !draft.apiKey.trim()) {
+  if (
+    editingId === null &&
+    !draft.apiKey.trim() &&
+    !KEYLESS_PROVIDERS.has(draft.provider)
+  ) {
     errors.apiKey = `Paste an API key for ${draft.provider} — it stays in this server’s memory only.`;
   }
 
@@ -215,7 +237,7 @@ function friendlyConfigError(raw: string): string {
   if (/needs "apiKey"|needs \\"apiKey\\"/.test(raw))
     return "One of your stops is missing an API key.";
   if (/unknown provider/.test(raw))
-    return "Pick one of the supported providers: openai, anthropic, gemini, or openai-compatible.";
+    return "Pick one of the supported providers: openai, azure, anthropic, gemini, openai-compatible, or a preset (groq, deepseek, ollama, …).";
   if (/environment variable .* is not set/.test(raw))
     return "A field contains ${…} but that environment variable isn’t set on the server — paste the real value instead.";
   if (/baseUrl.*required when provider is .openai-compatible./.test(raw))
@@ -709,7 +731,7 @@ export default function Page() {
                 />
                 <input
                   className={`cell url${draftErrors?.baseUrl ? " invalid" : ""}`}
-                  placeholder="base url — openai-compatible only"
+                  placeholder="base url — openai-compatible only (presets fill it in)"
                   aria-label="Base URL"
                   aria-invalid={draftErrors?.baseUrl ? true : undefined}
                   value={draft.baseUrl}

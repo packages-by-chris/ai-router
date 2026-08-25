@@ -24,7 +24,10 @@
       "additionalProperties": false,
       "properties": {
         "id": { "type": "string", "minLength": 1 },
-        "provider": { "enum": ["openai", "openai-compatible", "azure", "anthropic", "gemini"] },
+        "provider": {
+          "enum": ["openai", "openai-compatible", "azure", "anthropic", "gemini"],
+          "description": "Built-in adapters, plus any id from the preset catalog (groq, deepseek, mistral, openrouter, together, fireworks, perplexity, xai, cerebras, sambanova, cohere, deepinfra, nvidia, github-models, hyperbolic, novita, nebius, lambda, ollama, lmstudio, vllm) or registered via registerAdapter(). Preset ids resolve baseUrl/auth automatically; keyless presets (ollama, lmstudio, vllm) may omit apiKey/apiKeys."
+        },
         "model": {
           "type": "string",
           "minLength": 1,

@@ -25,17 +25,20 @@ const router = new AIRouter(config, {
 ## How it works
 
 1. **Closed** (normal). Every request attempts the route. Failures increment the counter.
-2. **Open** (tripped). After `threshold` consecutive failures, the route is skipped for `cooldownMs`. The `onAttempt` callback receives `outcome: "skipped_rate_limit"` with `message: "circuit breaker open"`.
-3. **Half-open** (probe). After cooldown expires, one request is allowed through as a probe.
-   - **Success** → circuit closes, failure counter resets.
-   - **Failure** → circuit reopens for another cooldown period.
+2. **Open** (tripped). After `threshold` consecutive failures, the route is skipped for `cooldownMs`. The `onAttempt` callback receives `outcome: "circuit_open"` with `message: "circuit breaker open"`.
+3. **Half-open** (probe). After the cooldown expires, requests are allowed through again.
+   - **Success** → circuit closes, failure and breach counters reset.
+   - **Failure** → circuit reopens; with `maxCooldownMs` set, the cooldown
+     doubles per consecutive breach (1× → 2× → 4× … capped), giving flapping
+     providers progressively longer recovery windows.
 
 ## Options
 
 | Field | Type | Default | Description |
 | --- | --- | --- | --- |
 | `threshold` | `number` | `Infinity` (disabled) | Consecutive failures before opening |
-| `cooldownMs` | `number` | `30000` | How long to skip the route (ms) |
+| `cooldownMs` | `number` | `30000` | Base cooldown (ms) |
+| `maxCooldownMs` | `number` | `= cooldownMs` | Cap for graduated doubling. Leave unset for a fixed cooldown. |
 
 ## Behavior
 

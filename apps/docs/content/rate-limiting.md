@@ -19,6 +19,21 @@ Routes can carry a budget:
 Windows are 60-second sliding windows. The engine never sleeps waiting for
 budget — it routes elsewhere.
 
+## USD spend budgets
+
+Beyond request/token limits, a route can cap **spend**:
+
+```json
+{ "budget": { "usd": 0.50, "windowMs": 60000 } }
+```
+
+Spend is computed from provider usage reports when [`pricing`](/docs/api-reference)
+is configured for the route (or its model name), and recorded post-hoc in
+micro-dollar integers. Pre-flight, the engine reads the window's recorded
+spend; at or over the cap the route is skipped (`outcome: "skipped_budget"`)
+and traffic falls through. Stores without a `used()` read-back fail open —
+budgets never gate unless the store can report spend.
+
 ## The store interface
 
 Budget state lives behind a two-method interface:
@@ -27,8 +42,10 @@ Budget state lives behind a two-method interface:
 interface RateLimitStore {
   /** Check-and-consume, called pre-flight. */
   take(key: string, cost: number, windowMs: number, limit: number): Promise<RateLimitDecision>;
-  /** Add usage without gating (token accounting). */
+  /** Add usage without gating (token/cost accounting). */
   record(key: string, cost: number, windowMs: number): Promise<void>;
+  /** Current window total, for budget pre-flight checks. Optional. */
+  used?(key: string, windowMs: number): Promise<number> | number;
 }
 ```
 

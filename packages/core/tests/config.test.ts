@@ -55,7 +55,7 @@ describe("parseConfig", () => {
 
   test("rejects unknown providers with the known list", () => {
     expect(() =>
-      parseConfig({ routes: [{ id: "x", provider: "cohere", model: "m", apiKey: "k" }] }),
+      parseConfig({ routes: [{ id: "x", provider: "notaprovider", model: "m", apiKey: "k" }] }),
     ).toThrow(/unknown provider/);
   });
 

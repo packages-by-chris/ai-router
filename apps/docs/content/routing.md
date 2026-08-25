@@ -26,14 +26,30 @@ If every route fails, `complete` throws
 [`AllRoutesFailedError`](/docs/errors) carrying an `attempts[]` record of every
 step.
 
-## Rate-limit skip
+## Strategies
+
+`strategy` on the config changes how the chain start is picked; after the
+start, fallback order is preserved:
+
+- **`fallback`** (default) — strict order. The primary serves until it fails.
+- **`round-robin`** — each request rotates the start cyclically. For pools of
+  interchangeable replicas.
+- **`weighted`** — each request picks the start proportionally to route
+  `weight` (default 1), then falls back from there. Use `rng` in engine
+  options to make selection deterministic in tests.
+- **`least-latency`** — routes are tried fastest-first using a per-route
+  latency EMA of observed successes (in-process). Unobserved routes are
+  sampled before observed ones so every route gets data.
+
+## Rate-limit and budget skip
 
 Before any HTTP call, the engine checks the route's rpm/tpm budget (see
-[Rate limiting](/docs/rate-limiting)). An exhausted route is **skipped without
-spending retries** and the walk continues — a throttled primary should not burn
-your backoff budget.
+[Rate limiting](/docs/rate-limiting)) and its USD spend budget. An exhausted
+route is **skipped without spending retries** (`outcome:
+"skipped_rate_limit"` or `"skipped_budget"`) and the walk continues — a
+throttled primary should not burn your backoff budget.
 
-## Observability: onAttempt
+## Observability: onAttempt / onFinish
 
 Both `complete` and `stream` accept per-call options with an `onAttempt` hook.
 It fires for every routing decision:
@@ -48,12 +64,20 @@ const res = await router.complete(
       //   outcome: "retry", attempts: 1, keyIndex: 2,
       //   kind: "rate_limit", message: "429 ..." }
     },
+    onFinish(summary) {
+      // fired once when the call settles
+      // { outcome: "ok", totalMs: 812, ttfbMs?: 240, routeId: "fast",
+      //   attempts: 1, usage, costUsd?, cached? }
+    },
   },
 );
 ```
 
 ```ts
-type AttemptOutcome = "ok" | "error" | "retry" | "skipped_rate_limit" | "unsupported";
+type AttemptOutcome =
+  | "ok" | "error" | "retry"
+  | "skipped_rate_limit" | "skipped_budget"
+  | "circuit_open" | "unsupported";
 
 interface AttemptEvent {
   routeId: string;
