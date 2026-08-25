@@ -26,6 +26,12 @@ on the shared conformance fixtures.**
 index `i` tries routes `i, i+1, …`. `model` in requests is a route id, never
 a provider model name.
 
+**Strategies.** `fallback` (default) tries strict order. `round-robin`
+rotates the chain start each request. `weighted` picks the start
+proportional to route `weight`, then falls back from there.
+`least-latency` orders routes by a per-route latency EMA of observed
+successes (unobserved routes are sampled first).
+
 **Three recovery layers, in order:**
 
 1. **Retry same route+key** — `rate_limit`, `server`, `network`, `timeout`.
@@ -36,16 +42,32 @@ a provider model name.
 3. **Next route** in the chain. Exhausted everywhere → `AllRoutesFailedError`
    carrying a full attempt trail.
 
+**Circuit breaker.** Per route, after `threshold` consecutive failures the
+route is skipped for `cooldownMs`. With `maxCooldownMs` set, each breach
+doubles the cooldown up to the cap (graduated cooldowns); without it the
+cooldown is fixed.
+
+**Budgets.** A route may carry `budget: { usd, windowMs }`. Actual spend is
+recorded post-hoc (micro-dollar integers) when `pricing` is configured;
+once the rolling window's spend reaches the cap the route is skipped
+pre-flight (`skipped_budget`) and traffic falls through. Stores without a
+`used()` read-back fail open.
+
+**Response cache.** Pass `responseCache` (`get`/`set`/`ttlMs`) to cache
+exact-match `complete()` results by logical request hash. Bring your own
+backing store.
+
 **Streaming commit boundary.** `router.stream()` resolves only after the
 first chunk has arrived — the serving route is final. Errors before the
 first token are fallback-eligible; errors after commit surface to the caller.
 A provider swap mid-stream is impossible and never attempted silently.
 
 **Rate limiting.** `rpm` is enforced pre-flight (cost 1/request). `tpm` is
-gated with a ~4-chars/token estimate pre-flight and corrected post-hoc from
-provider usage reports (streaming included via `stream_options.include_usage`).
-Both use a 60 s sliding window keyed per route. In-process by default —
-inject a Redis-backed `RateLimitStore` for multi-replica deployments.
+gated with a ~3.5-chars/token estimate pre-flight and corrected post-hoc
+from provider usage reports (streaming included via
+`stream_options.include_usage`). Both use a 60 s sliding window keyed per
+route. In-process by default — inject a Redis-backed `RateLimitStore` for
+multi-replica deployments.
 
 ## Layout
 
@@ -107,8 +129,34 @@ the cache — they read env vars.
 3. ~~Redis `RateLimitStore` adapter~~ done — [`@ai-router/redis`](packages/redis/README.md), Lua-atomic sliding window, bring-your-own-client, fail-open default
 4. ~~Raw escape hatch~~ done — `router.raw(routeId, { path?, body?, headers? })` → undecorated `Response`; rpm still gates, key cursor shared with unified calls
 5. ~~Multimodal (images)~~ done — unified `content` accepts OpenAI-style parts (`text`, `image_url` with http(s) or data URIs); translated per provider
-6. Python SDK against the same conformance fixtures
-7. Published JSON Schema for `RouterConfig`
+6. ~~Structured output + reasoning + caching surfaces~~ done — `response_format: json_schema` (OpenAI native, Gemini `responseJsonSchema`, dropped on Anthropic), `reasoning_effort` → OpenAI `reasoning_effort` / Anthropic thinking budget / Gemini `thinkingConfig`, reasoning text surfaced on messages and stream deltas, `Usage.cached_tokens` / `cache_write_tokens` / `reasoning_tokens`, Anthropic `cache_control` markers via message `providerOptions`, tiered pricing (`cache_read`, `cache_write`)
+7. ~~Azure OpenAI adapter~~ done — deployment URLs, `api-key` auth, required `apiVersion`; reuses the OpenAI translation wholesale
+8. ~~Routing strategies~~ done — `weighted` (weight-proportional start) and `least-latency` (EMA ordering, exploration-first for unobserved routes)
+9. ~~Budgets + graduated cooldowns + response cache + call summaries~~ done — route `budget.usd` rolling-window enforcement, circuit-breaker cooldown doubling up to `maxCooldownMs`, pluggable exact-match response cache, `onFinish` summary events with TTFB and total latency
+10. Python SDK against the same conformance fixtures
+11. Published JSON Schema for `RouterConfig` — shipped at
+    [`packages/core/schema/router-config.schema.json`](packages/core/schema/router-config.schema.json)
+
+### providerOptions escape hatch
+
+Per-request extras ride along with translation/retries/fallback (unlike
+`router.raw()`). Namespaces merge into the wire body; later keys win:
+
+```ts
+router.complete({
+  model: "smart",
+  messages,
+  providerOptions: {
+    openai: { parallel_tool_calls: false },
+    anthropic: { metadata: { user_id: "u1" } },
+    gemini: { safetySettings: [] },
+    azure: { seed: 42 },
+  },
+});
+```
+
+Prompt-cache breakpoints are message-level:
+`{ role: "system", content: "...", providerOptions: { anthropic: { cache_control: true } } }`.
 
 ## Example app
 
@@ -139,11 +187,13 @@ flash / mini class, ~16 max tokens). Non-zero exit on any failure.
 
 ### Known unified-layer limits (use `router.raw` for these)
 
-- Anthropic thinking blocks are dropped in translation (text/tool_use only)
 - Gemini 3 tool loops may need `thoughtSignature` round-tripping — not
   modeled; use raw for Gemini 3 function calling until it is
 - Gemini image URLs get mimeType guessed from the file extension
-- `response_format: json_schema`, logprobs, server tools: not modeled
+- `response_format: json_schema` on Anthropic routes is dropped (no
+  equivalent); logprobs, server tools: not modeled — use raw or
+  `providerOptions`
+- Audio/image-generation/video surfaces are out of scope by design
 
 ### Multi-replica rate limiting
 

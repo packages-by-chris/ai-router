@@ -56,6 +56,7 @@ export type AttemptOutcome =
   | "error"
   | "retry"
   | "skipped_rate_limit"
+  | "skipped_budget"
   | "circuit_open"
   | "unsupported";
 
@@ -69,12 +70,34 @@ export interface AttemptEvent {
   keyIndex?: number;
   kind?: ErrorKind;
   message?: string;
+  /** Success only: duration of the winning attempt (ms; first chunk for streams). */
+  latencyMs?: number;
+}
+
+/** End-of-call summary, fired once via CallOptions.onFinish. */
+export interface CallSummaryEvent {
+  outcome: "ok" | "failed";
+  /** Wall time from call start to result/failure (ms). */
+  totalMs: number;
+  /** Stream only: time to the committed first chunk (ms). */
+  ttfbMs?: number;
+  /** Serving route on success. */
+  routeId?: string;
+  provider?: string;
+  attempts: number;
+  /** Failure only: classified error kind when a ProviderError settled the call. */
+  kind?: ErrorKind;
+  usage?: Usage;
+  costUsd?: number;
+  cached?: boolean;
 }
 
 /** Per-call options (second argument of complete/stream/embed). */
 export interface CallOptions {
   /** Observability hook: fired for every routing decision and retry. */
   onAttempt?: (event: AttemptEvent) => void;
+  /** Observability hook: fired exactly once when the call settles. */
+  onFinish?: (summary: CallSummaryEvent) => void;
   /** Caller-provided abort signal. Cancels in-flight requests when fired. */
   signal?: AbortSignal;
 }
@@ -114,27 +137,44 @@ export interface EngineOptions {
   middleware?: Middleware;
   /**
    * Circuit breaker. After `threshold` consecutive failures on a route,
-   * skip it for `cooldownMs`. Default: disabled.
+   * skip it for `cooldownMs`. Each subsequent breach doubles the cooldown
+   * up to `maxCooldownMs` (default: no doubling — fixed cooldown).
    */
-  circuitBreaker?: { threshold?: number; cooldownMs?: number };
+  circuitBreaker?: { threshold?: number; cooldownMs?: number; maxCooldownMs?: number };
   /**
    * USD price per 1M tokens, keyed by route id or provider model name
    * (route id wins). Enables `cost_usd` on responses and usage-bearing
-   * stream chunks.
+   * stream chunks, and is required for route `budget` enforcement.
    */
   pricing?: Record<string, TokenPrice>;
+  /**
+   * Simple exact-match response cache for complete(). Key is a hash of the
+   * logical request (model + messages + params); value is the full
+   * ChatResponse. Bring your own backing store (Map, Redis, ...). Default:
+   * disabled.
+   */
+  responseCache?: {
+    get(key: string): Promise<string | undefined | null> | string | undefined | null;
+    set(key: string, value: string, ttlMs: number): Promise<void> | void;
+    /** Cache entry lifetime in ms. */
+    ttlMs: number;
+  };
 }
 
 /** Observability snapshot of engine-internal routing state. */
 export interface RouterStats {
-  strategy: "fallback" | "round-robin";
+  strategy: "fallback" | "round-robin" | "weighted" | "least-latency";
   circuitBreakers: Array<{
     routeId: string;
     failures: number;
     openUntil: number;
     open: boolean;
+    /** Graduated-cooldown breach count (0 when fixed cooldowns). */
+    opens: number;
   }>;
   keyCursors: Record<string, number>;
+  /** Per-route latency EMA in ms (strategy "least-latency" ordering signal). */
+  latencies: Record<string, number>;
   /** Per-key limiter totals, when the store supports snapshots. */
   rateLimits: Record<string, number> | null;
 }
@@ -147,11 +187,15 @@ export class RoutingEngine {
   private readonly middleware?: Middleware;
   private readonly cbThreshold: number;
   private readonly cbCooldownMs: number;
+  private readonly cbMaxCooldownMs: number;
   private readonly pricing?: Record<string, TokenPrice>;
+  private readonly responseCache?: EngineOptions["responseCache"];
   /** Circuit breaker state: consecutive failures per route and when it opens. */
-  private readonly cbState = new Map<string, { failures: number; openUntil: number }>();
+  private readonly cbState = new Map<string, { failures: number; openUntil: number; opens: number }>();
   /** Round-robin cursor so successive requests start on different keys. */
   private readonly keyCursor = new Map<string, number>();
+  /** Latency EMA per route id, ms (strategy "least-latency" ordering). */
+  private readonly latencyEma = new Map<string, number>();
   /** Round-robin chain rotation counter (strategy: "round-robin"). */
   private rrCounter = 0;
 
@@ -163,65 +207,134 @@ export class RoutingEngine {
     this.middleware = opts.middleware;
     this.cbThreshold = opts.circuitBreaker?.threshold ?? Infinity;
     this.cbCooldownMs = opts.circuitBreaker?.cooldownMs ?? 30_000;
+    // No explicit cap -> fixed cooldown (previous behavior).
+    this.cbMaxCooldownMs = opts.circuitBreaker?.maxCooldownMs ?? this.cbCooldownMs;
     this.pricing = opts.pricing;
+    this.responseCache = opts.responseCache;
   }
 
   async complete(req: ChatRequest, opts: CallOptions = {}): Promise<ChatResponse> {
+    const startedAt = Date.now();
     const notify = opts.onAttempt ?? noopNotify;
+    const onFinish = opts.onFinish;
     const signal = opts.signal;
     if (signal?.aborted) throw abortFrom(signal);
-    const chain = this.resolveChain(req.model);
+
     const attempts: AttemptRecord[] = [];
 
-    for (const route of chain) {
-      if (signal?.aborted) throw abortFrom(signal);
-      if (this.cbIsOpen(route.id)) {
-        const record: AttemptRecord = {
-          routeId: route.id, provider: route.provider, model: route.model,
-          outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
-        };
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
-
-      let adapter: ProviderAdapter;
+    // Exact-match response cache (complete only): hash the logical request.
+    if (this.responseCache) {
+      const key = responseCacheKey(req);
       try {
-        adapter = getAdapter(route.provider);
-      } catch (err) {
-        const record = unsupportedAttempt(route, err);
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
-
-      if (!(await this.takeBudget(route, estimateTokens(req)))) {
-        const record = skippedAttempt(route);
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
-
-      const result = await this.attemptWithRetry(
-        route, notify, signal,
-        (key, tries, keyIndex) => this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify),
-      );
-      if (result.ok) {
-        this.cbRecordSuccess(route.id);
-        const value = result.value;
-        const usage = value.usage;
-        if (route.limits.tpm !== undefined && usage) {
-          await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
+        const hit = await this.responseCache.get(key);
+        if (hit) {
+          const cachedResponse = JSON.parse(hit) as ChatResponse;
+          onFinish?.({
+            outcome: "ok",
+            totalMs: Date.now() - startedAt,
+            routeId: cachedResponse.provider,
+            attempts: 0,
+            usage: cachedResponse.usage ?? undefined,
+            costUsd: cachedResponse.cost_usd,
+            cached: true,
+          });
+          return cachedResponse;
         }
-        const price = this.priceFor(route);
-        if (price && usage) value.cost_usd = computeCost(usage, price);
-        return value;
+      } catch {
+        // Cache failures never block routing.
       }
-      this.cbRecordFailure(route.id);
-      attempts.push(result.attempt);
     }
 
-    throw new AllRoutesFailedError(attempts);
+    try {
+      let served: { route: NormalizedRoute; value: ChatResponse; tries: number } | undefined;
+
+      for (const route of this.resolveChain(req.model)) {
+        if (signal?.aborted) throw abortFrom(signal);
+        if (this.cbIsOpen(route.id)) {
+          const record: AttemptRecord = {
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
+          };
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        let adapter: ProviderAdapter;
+        try {
+          adapter = getAdapter(route.provider);
+        } catch (err) {
+          const record = unsupportedAttempt(route, err);
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        const overBudget = await this.budgetExhausted(route);
+        if (overBudget || !(await this.takeBudget(route, estimateTokens(req)))) {
+          const record = overBudget ? skippedBudgetAttempt(route) : skippedRateLimitAttempt(route);
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        const timing = { latencyMs: 0 };
+        const result = await this.attemptWithRetry(
+          route, notify, signal,
+          (key, tries, keyIndex) => this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify, timing),
+        );
+        if (result.ok) {
+          this.cbRecordSuccess(route.id);
+          served = { route, value: result.value, tries: result.tries };
+          break;
+        }
+        this.cbRecordFailure(route.id);
+        attempts.push(result.attempt);
+      }
+
+      if (!served) throw new AllRoutesFailedError(attempts);
+
+      const { route, value, tries } = served;
+      const usage = value.usage;
+      if (route.limits.tpm !== undefined && usage) {
+        await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
+      }
+      const price = this.priceFor(route);
+      if (price && usage) {
+        value.cost_usd = computeCost(usage, price);
+        if (route.budget) {
+          // Spend recorded in micro-dollars (integer) so every store,
+          // including the Redis Lua parser, stays integer-safe.
+          await this.store.record(
+            `${route.id}:usd`,
+            Math.round(value.cost_usd * 1e6),
+            route.budget.windowMs ?? WINDOW_MS,
+          );
+        }
+      }
+      if (this.responseCache) {
+        const key = responseCacheKey(req);
+        void Promise.resolve(this.responseCache.set(key, JSON.stringify(value), this.responseCache.ttlMs)).catch(() => {});
+      }
+      onFinish?.({
+        outcome: "ok",
+        totalMs: Date.now() - startedAt,
+        routeId: route.id,
+        provider: route.provider,
+        attempts: attempts.length + 1,
+        usage: usage ?? undefined,
+        costUsd: value.cost_usd,
+      });
+      return value;
+    } catch (err) {
+      onFinish?.({
+        outcome: "failed",
+        totalMs: Date.now() - startedAt,
+        attempts: attempts.length,
+        kind: err instanceof ProviderError ? err.kind : undefined,
+      });
+      throw err;
+    }
   }
 
   /**
@@ -230,54 +343,96 @@ export class RoutingEngine {
    * surface to the caller — a provider swap mid-stream is impossible.
    */
   async stream(req: ChatRequest, opts: CallOptions = {}): Promise<AsyncIterable<ChatChunk>> {
+    const startedAt = Date.now();
     const notify = opts.onAttempt ?? noopNotify;
+    const onFinish = opts.onFinish;
     const signal = opts.signal;
     if (signal?.aborted) throw abortFrom(signal);
-    const chain = this.resolveChain(req.model);
     const attempts: AttemptRecord[] = [];
 
-    for (const route of chain) {
-      if (signal?.aborted) throw abortFrom(signal);
-      if (this.cbIsOpen(route.id)) {
-        const record: AttemptRecord = {
-          routeId: route.id, provider: route.provider, model: route.model,
-          outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
-        };
-        attempts.push(record);
-        notify(record);
-        continue;
+    try {
+      let served:
+        | {
+            route: NormalizedRoute;
+            iterator: AsyncIterator<ChatChunk>;
+            first: ChatChunk;
+            tries: number;
+            ttfbMs: number;
+          }
+        | undefined;
+
+      for (const route of this.resolveChain(req.model)) {
+        if (signal?.aborted) throw abortFrom(signal);
+        if (this.cbIsOpen(route.id)) {
+          const record: AttemptRecord = {
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
+          };
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        let adapter: ProviderAdapter;
+        try {
+          adapter = getAdapter(route.provider);
+        } catch (err) {
+          const record = unsupportedAttempt(route, err);
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        const overBudget = await this.budgetExhausted(route);
+        if (overBudget || !(await this.takeBudget(route, estimateTokens(req)))) {
+          const record = overBudget ? skippedBudgetAttempt(route) : skippedRateLimitAttempt(route);
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        const timing = { latencyMs: 0 };
+        const result = await this.attemptWithRetry(
+          route, notify, signal,
+          (key, tries, keyIndex) => this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify, timing),
+        );
+        if (result.ok) {
+          this.cbRecordSuccess(route.id);
+          served = {
+            route,
+            iterator: result.value.iterator,
+            first: result.value.first,
+            tries: result.tries,
+            ttfbMs: timing.latencyMs,
+          };
+          break;
+        }
+        this.cbRecordFailure(route.id);
+        attempts.push(result.attempt);
       }
 
-      let adapter: ProviderAdapter;
-      try {
-        adapter = getAdapter(route.provider);
-      } catch (err) {
-        const record = unsupportedAttempt(route, err);
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
+      if (!served) throw new AllRoutesFailedError(attempts);
 
-      if (!(await this.takeBudget(route, estimateTokens(req)))) {
-        const record = skippedAttempt(route);
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
-
-      const result = await this.attemptWithRetry(
-        route, notify, signal,
-        (key, tries, keyIndex) => this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify),
-      );
-      if (result.ok) {
-        this.cbRecordSuccess(route.id);
-        return result.value;
-      }
-      this.cbRecordFailure(route.id);
-      attempts.push(result.attempt);
+      const { route, iterator, first, tries, ttfbMs } = served;
+      onFinish?.({
+        outcome: "ok",
+        totalMs: Date.now() - startedAt,
+        ttfbMs,
+        routeId: route.id,
+        provider: route.provider,
+        attempts: attempts.length + 1,
+        usage: first.usage,
+        costUsd: first.cost_usd,
+      });
+      return this.continueStream(route, iterator, first);
+    } catch (err) {
+      onFinish?.({
+        outcome: "failed",
+        totalMs: Date.now() - startedAt,
+        attempts: attempts.length,
+      });
+      throw err;
     }
-
-    throw new AllRoutesFailedError(attempts);
   }
 
   /**
@@ -286,59 +441,88 @@ export class RoutingEngine {
    * unsupported attempts and routing falls through to the next route.
    */
   async embed(req: EmbeddingRequest, opts: CallOptions = {}): Promise<EmbeddingResponse> {
+    const startedAt = Date.now();
     const notify = opts.onAttempt ?? noopNotify;
+    const onFinish = opts.onFinish;
     const signal = opts.signal;
     if (signal?.aborted) throw abortFrom(signal);
-    const chain = this.resolveChain(req.model);
     const attempts: AttemptRecord[] = [];
 
-    for (const route of chain) {
-      if (signal?.aborted) throw abortFrom(signal);
-      let adapter: ProviderAdapter;
-      try {
-        adapter = getAdapter(route.provider);
-      } catch (err) {
-        const record = unsupportedAttempt(route, err);
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
-      if (!adapter.embed) {
-        const record = unsupportedAttempt(
-          route,
-          new ConfigError(`${route.provider} does not support embeddings`),
-        );
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
+    try {
+      let served: { route: NormalizedRoute; value: EmbeddingResponse } | undefined;
 
-      if (!(await this.takeBudget(route, estimateEmbeddingTokens(req)))) {
-        const record = skippedAttempt(route);
-        attempts.push(record);
-        notify(record);
-        continue;
-      }
-
-      const result = await this.attemptWithRetry(route, notify, signal, (key, tries, keyIndex) =>
-        this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify),
-      );
-      if (result.ok) {
-        this.cbRecordSuccess(route.id);
-        const value = result.value;
-        const usage = value.usage;
-        if (route.limits.tpm !== undefined && usage) {
-          await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
+      for (const route of this.resolveChain(req.model)) {
+        if (signal?.aborted) throw abortFrom(signal);
+        if (this.cbIsOpen(route.id)) {
+          const record: AttemptRecord = {
+            routeId: route.id, provider: route.provider, model: route.model,
+            outcome: "circuit_open", attempts: 0, message: "circuit breaker open",
+          };
+          attempts.push(record);
+          notify(record);
+          continue;
         }
-        const price = this.priceFor(route);
-        if (price && usage) value.cost_usd = computeCost(usage, price);
-        return value;
-      }
-      this.cbRecordFailure(route.id);
-      attempts.push(result.attempt);
-    }
 
-    throw new AllRoutesFailedError(attempts);
+        let adapter: ProviderAdapter;
+        try {
+          adapter = getAdapter(route.provider);
+        } catch (err) {
+          const record = unsupportedAttempt(route, err);
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+        if (!adapter.embed) {
+          const record = unsupportedAttempt(
+            route,
+            new ConfigError(`${route.provider} does not support embeddings`),
+          );
+          attempts.push(record);
+          notify(record);
+          continue;
+        }
+
+        if (!(await this.takeBudget(route, estimateEmbeddingTokens(req)))) {
+          attempts.push(skippedRateLimitAttempt(route));
+          notify(attempts[attempts.length - 1]!);
+          continue;
+        }
+
+        const result = await this.attemptWithRetry(route, notify, signal, (key, tries, keyIndex) =>
+          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify),
+        );
+        if (result.ok) {
+          this.cbRecordSuccess(route.id);
+          served = { route, value: result.value };
+          break;
+        }
+        this.cbRecordFailure(route.id);
+        attempts.push(result.attempt);
+      }
+
+      if (!served) throw new AllRoutesFailedError(attempts);
+
+      const { route, value } = served;
+      const usage = value.usage;
+      if (route.limits.tpm !== undefined && usage) {
+        await this.store.record(`${route.id}:tpm`, usage.total_tokens, WINDOW_MS);
+      }
+      const price = this.priceFor(route);
+      if (price && usage) value.cost_usd = computeCost(usage, price);
+      onFinish?.({
+        outcome: "ok",
+        totalMs: Date.now() - startedAt,
+        routeId: route.id,
+        provider: route.provider,
+        attempts: attempts.length + 1,
+        usage: usage ?? undefined,
+        costUsd: value.cost_usd,
+      });
+      return value;
+    } catch (err) {
+      onFinish?.({ outcome: "failed", totalMs: Date.now() - startedAt, attempts: attempts.length });
+      throw err;
+    }
   }
 
   /**
@@ -385,8 +569,10 @@ export class RoutingEngine {
         failures: s.failures,
         openUntil: s.openUntil,
         open: Date.now() < s.openUntil,
+        opens: s.opens,
       })),
       keyCursors: Object.fromEntries(this.keyCursor),
+      latencies: Object.fromEntries(this.latencyEma),
       rateLimits,
     };
   }
@@ -402,13 +588,17 @@ export class RoutingEngine {
     req: ChatRequest,
     signal: AbortSignal | undefined,
     notify: Notify,
+    timing: { latencyMs: number },
   ): Promise<ChatResponse> {
     await this.fireBeforeRequest(route, req, tries);
+    const t0 = Date.now();
     const value = await adapter.complete(route, key, req, { fetchImpl: this.fetchImpl, signal });
+    timing.latencyMs = Date.now() - t0;
+    this.recordLatency(route.id, timing.latencyMs);
     await this.fireAfterResponse(route, req, tries, value);
     notify({
       routeId: route.id, provider: route.provider, model: route.model,
-      outcome: "ok", attempts: tries, keyIndex,
+      outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
     });
     return value;
   }
@@ -422,23 +612,29 @@ export class RoutingEngine {
     req: ChatRequest,
     signal: AbortSignal | undefined,
     notify: Notify,
-  ): Promise<AsyncIterable<ChatChunk>> {
+    timing: { latencyMs: number },
+  ): Promise<{ iterator: AsyncIterator<ChatChunk>; first: ChatChunk }> {
     await this.fireBeforeRequest(route, req, tries);
     const iterable = await adapter.stream(route, key, req, { fetchImpl: this.fetchImpl, signal });
     const iterator = iterable[Symbol.asyncIterator]();
+    const t0 = Date.now();
     const first = route.streamIdleTimeoutMs
       ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
       : await iterator.next();
     if (first.done) {
+      timing.latencyMs = Date.now() - t0;
+      this.recordLatency(route.id, timing.latencyMs);
       notify({
         routeId: route.id, provider: route.provider, model: route.model,
-        outcome: "ok", attempts: tries, keyIndex,
+        outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
       });
-      return emptyStream();
+      return { iterator, first: emptyChunk() };
     }
+    timing.latencyMs = Date.now() - t0;
+    this.recordLatency(route.id, timing.latencyMs);
     notify({
       routeId: route.id, provider: route.provider, model: route.model,
-      outcome: "ok", attempts: tries, keyIndex,
+      outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
     });
     // Fire afterResponse with a synthetic response from first chunk metadata.
     await this.fireAfterResponse(route, req, tries, {
@@ -449,7 +645,7 @@ export class RoutingEngine {
       choices: [{ index: 0, message: { role: first.value.delta.role ?? "assistant", content: first.value.delta.content ?? null }, finish_reason: null }],
       usage: first.value.usage ?? null,
     });
-    return this.continueStream(route, iterator, first.value);
+    return { iterator, first: first.value };
   }
 
   private async embedOnce(
@@ -481,7 +677,7 @@ export class RoutingEngine {
     notify: Notify,
     signal: AbortSignal | undefined,
     op: (key: string, tries: number, keyIndex: number) => Promise<T>,
-  ): Promise<{ ok: true; value: T } | { ok: false; attempt: AttemptRecord }> {
+  ): Promise<{ ok: true; value: T; tries: number } | { ok: false; attempt: AttemptRecord }> {
     const maxRetries = route.maxRetries;
     const poolSize = route.keyPool.length;
     let keyIndex = this.nextKeyIndex(route);
@@ -495,7 +691,8 @@ export class RoutingEngine {
       const key = route.keyPool[keyIndex % poolSize] as string;
       tries++;
       try {
-        return { ok: true, value: await op(key, tries, keyIndex) };
+        const value = await op(key, tries, keyIndex);
+        return { ok: true, value, tries };
       } catch (err) {
         if (signal?.aborted) throw err;
         last = toProviderError(err, route.provider);
@@ -549,7 +746,18 @@ export class RoutingEngine {
         await this.store.record(`${route.id}:tpm`, chunk.usage.total_tokens, WINDOW_MS);
       }
       const price = this.priceFor(route);
-      if (price && chunk.usage) chunk.cost_usd = computeCost(chunk.usage, price);
+      if (price && chunk.usage) {
+        chunk.cost_usd = computeCost(chunk.usage, price);
+        // Post-hoc spend accounting feeds the route's rolling budget
+        // (micro-dollar integers — see complete()).
+        if (route.budget) {
+          await this.store.record(
+            `${route.id}:usd`,
+            Math.round(chunk.cost_usd * 1e6),
+            route.budget.windowMs ?? WINDOW_MS,
+          );
+        }
+      }
       yield chunk;
     }
   }
@@ -583,11 +791,48 @@ export class RoutingEngine {
       throw new ConfigError(`unknown model "${model}" (known route ids: ${known})`);
     }
     const chain = this.config.routes.slice(index).map(normalizeRoute);
-    if (this.config.strategy === "round-robin" && chain.length > 1) {
+    const strategy = this.config.strategy;
+    if (strategy === "round-robin" && chain.length > 1) {
       const offset = this.rrCounter++ % chain.length;
       if (offset > 0) chain.push(...chain.splice(0, offset));
+    } else if (strategy === "weighted" && chain.length > 1) {
+      // Weighted-random start, then fallback order from there.
+      const weights = chain.map((r) => (r.weight && r.weight > 0 ? r.weight : 1));
+      const total = weights.reduce((a, b) => a + b, 0);
+      let pick = this.rng() * total;
+      let offset = 0;
+      for (let i = 0; i < weights.length; i++) {
+        pick -= weights[i]!;
+        if (pick <= 0) {
+          offset = i;
+          break;
+        }
+      }
+      if (offset > 0) chain.push(...chain.splice(0, offset));
+    } else if (strategy === "least-latency" && chain.length > 1) {
+      // Fastest-first by observed EMA. Unobserved routes sort BEFORE observed
+      // ones (bounded exploration: every route gets sampled once) and keep
+      // their original relative order among themselves.
+      const withIdx = chain.map((route, i) => ({
+        route,
+        i,
+        ema: this.latencyEma.get(route.id),
+      }));
+      withIdx.sort((a, b) => {
+        if (a.ema !== undefined && b.ema !== undefined) return a.ema - b.ema;
+        if (a.ema === undefined && b.ema !== undefined) return -1;
+        if (b.ema === undefined && a.ema !== undefined) return 1;
+        return a.i - b.i;
+      });
+      for (let i = 0; i < withIdx.length; i++) chain[i] = withIdx[i]!.route;
     }
     return chain;
+  }
+
+  /** Exponential-moving-average success latency per route (alpha 0.3). */
+  private recordLatency(routeId: string, ms: number): void {
+    const prev = this.latencyEma.get(routeId);
+    this.latencyEma.set(routeId, prev === undefined ? ms : 0.3 * ms + 0.7 * prev);
   }
 
   /** Pre-flight budget check. rpm costs 1 request; tpm costs `tokenCost`. */
@@ -606,6 +851,21 @@ export class RoutingEngine {
       if (!decision.allowed) return false;
     }
     return true;
+  }
+
+  /**
+   * True when the route's rolling USD spend budget is exhausted. Requires a
+   * store that supports read-back (`used`); otherwise fails open. Spend is
+   * recorded in micro-dollars, so the configured limit scales by 1e6 here.
+   */
+  private async budgetExhausted(route: NormalizedRoute): Promise<boolean> {
+    if (!route.budget || !this.store.used) return false;
+    try {
+      const used = await this.store.used(`${route.id}:usd`, route.budget.windowMs ?? WINDOW_MS);
+      return used >= Math.round(route.budget.usd * 1e6);
+    } catch {
+      return false;
+    }
   }
 
   private async fireBeforeRequest(route: NormalizedRoute, req: ChatRequest, attempt: number): Promise<void> {
@@ -638,26 +898,26 @@ export class RoutingEngine {
     const now = Date.now();
     const state = this.cbState.get(routeId);
     if (state && now >= state.openUntil) {
-      // Cooldown expired, reset.
+      // Cooldown expired, reset the consecutive-failure count; the breach
+      // count survives so graduated cooldowns keep escalating.
       state.failures = 1;
       state.openUntil = 0;
     } else if (state) {
       state.failures++;
     } else {
-      this.cbState.set(routeId, { failures: 1, openUntil: 0 });
+      this.cbState.set(routeId, { failures: 1, openUntil: 0, opens: 0 });
     }
     const s = this.cbState.get(routeId)!;
     if (s.failures >= this.cbThreshold && s.openUntil === 0) {
-      s.openUntil = now + this.cbCooldownMs;
+      s.opens++;
+      s.openUntil = now + Math.min(this.cbCooldownMs * 2 ** (s.opens - 1), this.cbMaxCooldownMs);
     }
   }
 
   private cbIsOpen(routeId: string): boolean {
     const state = this.cbState.get(routeId);
     if (!state) return false;
-    if (Date.now() < state.openUntil) return true;
-    // Cooldown expired — allow one probe request.
-    return false;
+    return Date.now() < state.openUntil;
   }
 
   private nextKeyIndex(route: NormalizedRoute): number {
@@ -752,13 +1012,25 @@ function failedAttempt(
   };
 }
 
-function skippedAttempt(route: NormalizedRoute): AttemptRecord {
+function skippedRateLimitAttempt(route: NormalizedRoute): AttemptRecord {
   return {
     routeId: route.id,
     provider: route.provider,
     model: route.model,
     outcome: "skipped_rate_limit",
     attempts: 0,
+    message: "rate limit budget exhausted pre-flight",
+  };
+}
+
+function skippedBudgetAttempt(route: NormalizedRoute): AttemptRecord {
+  return {
+    routeId: route.id,
+    provider: route.provider,
+    model: route.model,
+    outcome: "skipped_budget",
+    attempts: 0,
+    message: "usd spend budget exhausted",
   };
 }
 
@@ -773,14 +1045,36 @@ function unsupportedAttempt(route: NormalizedRoute, err: unknown): AttemptRecord
   };
 }
 
-function emptyStream(): AsyncIterable<ChatChunk> {
-  return (async function* () {})();
+function emptyChunk(): ChatChunk {
+  return { id: "", model: "", provider: "", delta: {}, finish_reason: null };
 }
 
-/** USD cost from token usage and per-1M-token pricing, rounded to 6 decimals. */
-function computeCost(usage: Usage, price: TokenPrice): number {
+/** Stable FNV-1a hash for exact-match response cache keys. */
+function fnv1a(input: string): string {
+  let h = 0x811c9dc5;
+  for (let i = 0; i < input.length; i++) {
+    h ^= input.charCodeAt(i);
+    h = Math.imul(h, 0x01000193);
+  }
+  return (h >>> 0).toString(16);
+}
+
+function responseCacheKey(req: ChatRequest): string {
+  return `${req.model}:${fnv1a(JSON.stringify(req))}`;
+}
+
+/**
+ * USD cost from token usage and per-1M-token pricing, rounded to 6 decimals.
+ * Cache tiers apply when present; missing tiers fall back to the input price.
+ */
+export function computeCost(usage: Usage, price: TokenPrice): number {
+  const cached = usage.cached_tokens ?? 0;
+  const cacheWrite = usage.cache_write_tokens ?? 0;
+  const uncached = Math.max(0, usage.prompt_tokens - cached - cacheWrite);
   const usd =
-    (usage.prompt_tokens / 1_000_000) * price.input +
+    (uncached / 1_000_000) * price.input +
+    (cached / 1_000_000) * (price.cache_read ?? price.input) +
+    (cacheWrite / 1_000_000) * (price.cache_write ?? price.input) +
     (usage.completion_tokens / 1_000_000) * price.output;
   return Math.round(usd * 1e6) / 1e6;
 }

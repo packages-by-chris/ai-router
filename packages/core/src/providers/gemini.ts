@@ -33,6 +33,13 @@ import type { AdapterContext, NormalizedRoute, ProviderAdapter, RawRequestOption
 
 export const GEMINI_DEFAULT_BASE_URL = "https://generativelanguage.googleapis.com/v1beta";
 
+/** reasoning_effort -> Gemini thinkingConfig.thinkingBudget. */
+export const GEMINI_THINKING_BUDGETS: Record<"low" | "medium" | "high", number> = {
+  low: 1024,
+  medium: 8192,
+  high: 24576,
+};
+
 function baseUrl(route: NormalizedRoute): string {
   return (route.baseUrl ?? GEMINI_DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
@@ -205,8 +212,17 @@ export function translateRequest(
   if (req.response_format?.type === "json_object") {
     generationConfig.responseMimeType = "application/json";
   }
+  if (req.response_format?.type === "json_schema") {
+    generationConfig.responseMimeType = "application/json";
+    generationConfig.responseJsonSchema = req.response_format.json_schema.schema;
+  }
+  if (req.reasoning_effort !== undefined) {
+    generationConfig.thinkingConfig = {
+      thinkingBudget: GEMINI_THINKING_BUDGETS[req.reasoning_effort],
+      includeThoughts: true,
+    };
+  }
   if (Object.keys(generationConfig).length > 0) body.generationConfig = generationConfig;
-
   const sendTools = req.tool_choice !== "none" && req.tools !== undefined && req.tools.length > 0;
   if (sendTools) {
     body.tools = [
@@ -228,6 +244,11 @@ export function translateRequest(
     }
   }
 
+  // Request-level extras ride along under the gemini namespace. Applied last
+  // so explicit keys win over translated ones.
+  const extra = req.providerOptions?.gemini;
+  if (extra && typeof extra === "object") Object.assign(body, extra);
+
   return body;
 }
 
@@ -238,18 +259,30 @@ function toUsage(v: unknown): Usage | null {
   const completion = u.candidatesTokenCount;
   if (typeof prompt !== "number" || typeof completion !== "number") return null;
   const total = typeof u.totalTokenCount === "number" ? u.totalTokenCount : prompt + completion;
-  return { prompt_tokens: prompt, completion_tokens: completion, total_tokens: total };
+  const cached = typeof u.cachedContentTokenCount === "number" ? u.cachedContentTokenCount : undefined;
+  const thoughts = typeof u.thoughtsTokenCount === "number" ? u.thoughtsTokenCount : undefined;
+  return {
+    prompt_tokens: prompt,
+    completion_tokens: completion,
+    total_tokens: total,
+    ...(cached !== undefined && cached > 0 ? { cached_tokens: cached } : {}),
+    ...(thoughts !== undefined && thoughts > 0 ? { reasoning_tokens: thoughts } : {}),
+  };
 }
 
 function partsToUnified(parts: Record<string, unknown>[]): {
   text: string;
+  reasoning: string;
   toolCalls: ToolCall[];
 } {
   let text = "";
+  let reasoning = "";
   const toolCalls: ToolCall[] = [];
   for (const part of parts) {
     if (typeof part.text === "string") {
-      text += part.text;
+      // thought:true parts carry internal reasoning, not visible content.
+      if (part.thought === true) reasoning += part.text;
+      else text += part.text;
     } else if (typeof part.functionCall === "object" && part.functionCall !== null) {
       const fc = part.functionCall as Record<string, unknown>;
       const index = toolCalls.length;
@@ -263,7 +296,7 @@ function partsToUnified(parts: Record<string, unknown>[]): {
       });
     }
   }
-  return { text, toolCalls };
+  return { text, reasoning, toolCalls };
 }
 
 /** Gemini generateContent response -> unified ChatResponse. */
@@ -276,12 +309,14 @@ export function translateResponse(json: unknown, providerModel: string): ChatRes
 
   let text = "";
   let toolCalls: ToolCall[] = [];
+  let reasoning = "";
   let finish: string | null = null;
   if (candidate) {
     const content = (candidate.content ?? {}) as Record<string, unknown>;
     const parts = Array.isArray(content.parts) ? (content.parts as Record<string, unknown>[]) : [];
     const unified = partsToUnified(parts);
     text = unified.text;
+    reasoning = unified.reasoning;
     toolCalls = unified.toolCalls;
     finish = mapFinishReason(candidate.finishReason);
   } else if (blocked) {
@@ -302,6 +337,7 @@ export function translateResponse(json: unknown, providerModel: string): ChatRes
         message: {
           role: "assistant",
           content: text !== "" ? text : toolCalls.length > 0 ? null : "",
+          ...(reasoning !== "" ? { reasoning } : {}),
           ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
       },
@@ -455,8 +491,18 @@ export class GeminiAdapter implements ProviderAdapter {
           for (const part of parts) {
             if (typeof part.text === "string" && part.text !== "") {
               yield* ensureRole();
-              const delta: Delta = { content: part.text };
-              yield { id: "", model: servedModel, provider: "gemini", delta, finish_reason: null };
+              if (part.thought === true) {
+                yield {
+                  id: "",
+                  model: servedModel,
+                  provider: "gemini",
+                  delta: { reasoning: part.text },
+                  finish_reason: null,
+                };
+              } else {
+                const delta: Delta = { content: part.text };
+                yield { id: "", model: servedModel, provider: "gemini", delta, finish_reason: null };
+              }
             } else if (typeof part.functionCall === "object" && part.functionCall !== null) {
               yield* ensureRole();
               const fc = part.functionCall as Record<string, unknown>;

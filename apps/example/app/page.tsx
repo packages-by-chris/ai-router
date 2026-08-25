@@ -536,6 +536,7 @@ export default function Page() {
     error: "failed",
     retry: "retrying",
     skipped_rate_limit: "rate-limited · skip",
+    skipped_budget: "over budget · skip",
     circuit_open: "circuit open · skip",
     unsupported: "unsupported",
   };

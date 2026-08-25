@@ -68,7 +68,7 @@ export interface AttemptRecord {
   routeId: string;
   provider: string;
   model: string;
-  outcome: "error" | "skipped_rate_limit" | "circuit_open" | "unsupported";
+  outcome: "error" | "skipped_rate_limit" | "skipped_budget" | "circuit_open" | "unsupported";
   attempts: number;
   keyIndex?: number;
   kind?: ErrorKind;

@@ -34,6 +34,27 @@ function baseUrl(route: NormalizedRoute): string {
   return (route.baseUrl ?? OPENAI_DEFAULT_BASE_URL).replace(/\/+$/, "");
 }
 
+/**
+ * Provider namespaces whose `providerOptions` entries this adapter merges
+ * into the wire body. Later namespaces win on key conflicts.
+ */
+const OPENAI_OPTION_NAMESPACES = ["openai"] as const;
+
+/** Shallow-merge providerOptions namespaces into the wire body. */
+export function mergeProviderOptions(
+  body: Record<string, unknown>,
+  req: ChatRequest,
+  namespaces: readonly string[],
+): Record<string, unknown> {
+  const opts = req.providerOptions;
+  if (!opts) return body;
+  for (const ns of namespaces) {
+    const extra = opts[ns];
+    if (extra && typeof extra === "object") Object.assign(body, extra);
+  }
+  return body;
+}
+
 export function translateRequest(req: ChatRequest, providerModel: string, stream: boolean): Record<string, unknown> {
   const body: Record<string, unknown> = {
     model: providerModel,
@@ -46,45 +67,28 @@ export function translateRequest(req: ChatRequest, providerModel: string, stream
   if (req.max_tokens !== undefined) body.max_tokens = req.max_tokens;
   if (req.stop !== undefined) body.stop = req.stop;
   if (req.response_format !== undefined) body.response_format = req.response_format;
+  if (req.reasoning_effort !== undefined) body.reasoning_effort = req.reasoning_effort;
   if (req.user !== undefined) body.user = req.user;
   if (stream) {
     body.stream = true;
     // Ask for a final usage-bearing chunk so post-hoc tpm accounting works.
     body.stream_options = { include_usage: true };
   }
-  return body;
+  return mergeProviderOptions(body, req, OPENAI_OPTION_NAMESPACES);
 }
 
-function headers(route: NormalizedRoute, key: string): Record<string, string> {
-  return {
-    "content-type": "application/json",
-    authorization: `Bearer ${key}`,
-    ...route.headers,
-  };
-}
-
-async function request(
-  route: NormalizedRoute,
-  key: string,
-  req: ChatRequest,
-  stream: boolean,
-  ctx: AdapterContext,
-): Promise<Response> {
-  const label = providerLabel(route);
-  const url = `${baseUrl(route)}/chat/completions`;
-  const init: RequestInit = {
-    method: "POST",
-    headers: headers(route, key),
-    body: JSON.stringify(translateRequest(req, route.model, stream)),
-  };
-  try {
-    return await fetchWithTimeout(ctx.fetchImpl, url, init, {
-      timeoutMs: route.timeoutMs,
-      signal: ctx.signal,
-    });
-  } catch (err) {
-    throw toNetworkError(label, err);
+/** OpenAI usage details: cached prompt tokens + reasoning completion tokens. */
+export function usageDetails(u: Record<string, unknown>): Partial<Usage> {
+  const out: Partial<Usage> = {};
+  const promptDetails = u.prompt_tokens_details as Record<string, unknown> | undefined;
+  if (promptDetails && typeof promptDetails.cached_tokens === "number") {
+    out.cached_tokens = promptDetails.cached_tokens;
   }
+  const completionDetails = u.completion_tokens_details as Record<string, unknown> | undefined;
+  if (completionDetails && typeof completionDetails.reasoning_tokens === "number") {
+    out.reasoning_tokens = completionDetails.reasoning_tokens;
+  }
+  return out;
 }
 
 function toUsage(v: unknown): Usage | null {
@@ -101,6 +105,7 @@ function toUsage(v: unknown): Usage | null {
     prompt_tokens: u.prompt_tokens,
     completion_tokens: u.completion_tokens,
     total_tokens: u.total_tokens,
+    ...usageDetails(u),
   };
 }
 
@@ -154,6 +159,12 @@ export function translateChunk(
     delta = {
       ...(d.role !== undefined ? { role: toRole(d.role) } : {}),
       ...(d.content !== undefined ? { content: d.content as string } : {}),
+      // OpenAI-compatible reasoning deltas (OpenRouter "reasoning",
+      // DeepSeek-style "reasoning_content", o-series "reasoning").
+      ...(typeof d.reasoning === "string" && d.reasoning !== "" ? { reasoning: d.reasoning } : {}),
+      ...(typeof d.reasoning_content === "string" && d.reasoning_content !== ""
+        ? { reasoning: d.reasoning_content }
+        : {}),
       ...(d.tool_calls !== undefined ? { tool_calls: d.tool_calls as Delta["tool_calls"] } : {}),
     };
     if (typeof first.finish_reason === "string") finish_reason = first.finish_reason;
@@ -172,7 +183,67 @@ export function translateChunk(
 }
 
 export class OpenAIAdapter implements ProviderAdapter {
-  readonly id = "openai";
+  readonly id: string = "openai";
+
+  // Overridable wire-shape hooks. Azure reuses this entire adapter and only
+  // changes the URL layout, auth header, and provider label.
+
+  /** Provider label for unified responses/errors. */
+  protected labelFor(route: NormalizedRoute): string {
+    return providerLabel(route);
+  }
+
+  /** Base URL without trailing slashes. */
+  protected base(route: NormalizedRoute): string {
+    return baseUrl(route);
+  }
+
+  protected chatEndpoint(route: NormalizedRoute): string {
+    return `${this.base(route)}/chat/completions`;
+  }
+
+  protected embedEndpoint(route: NormalizedRoute): string {
+    return `${this.base(route)}/embeddings`;
+  }
+
+  protected rawEndpoint(route: NormalizedRoute, opts: RawRequestOptions): string {
+    return `${this.base(route)}${opts.path ?? "/chat/completions"}`;
+  }
+
+  protected authHeaders(route: NormalizedRoute, key: string): Record<string, string> {
+    void route;
+    return { authorization: `Bearer ${key}` };
+  }
+
+  /** providerOptions namespaces merged into request bodies (later wins). */
+  protected optionNamespaces(): readonly string[] {
+    return OPENAI_OPTION_NAMESPACES;
+  }
+
+  /**
+   * Unified request -> wire body. Module-level translateRequest already
+   * merges the "openai" namespace; subclasses extend the namespace list by
+   * overriding optionNamespaces() and re-merging here.
+   */
+  protected buildBody(req: ChatRequest, providerModel: string, stream: boolean): Record<string, unknown> {
+    const body = translateRequest(req, providerModel, stream);
+    return mergeProviderOptions(body, req, this.optionNamespaces());
+  }
+
+  private async send(
+    url: string,
+    init: RequestInit,
+    label: string,
+    ctx: AdapterContext,
+    timeoutMs: number,
+    signal?: AbortSignal,
+  ): Promise<Response> {
+    try {
+      return await fetchWithTimeout(ctx.fetchImpl, url, init, { timeoutMs, signal });
+    } catch (err) {
+      throw toNetworkError(label, err);
+    }
+  }
 
   /** Verbatim passthrough. No requireOk, no translation, no retries. */
   async raw(
@@ -181,23 +252,20 @@ export class OpenAIAdapter implements ProviderAdapter {
     opts: RawRequestOptions,
     ctx: AdapterContext,
   ): Promise<Response> {
-    const label = providerLabel(route);
-    const url = `${baseUrl(route)}${opts.path ?? "/chat/completions"}`;
+    const label = this.labelFor(route);
     const init: RequestInit = {
       method: opts.method ?? "POST",
-      headers: { ...headers(route, key), ...(opts.headers ?? {}) },
+      headers: {
+        "content-type": "application/json",
+        ...this.authHeaders(route, key),
+        ...route.headers,
+        ...(opts.headers ?? {}),
+      },
       ...(opts.body !== undefined
         ? { body: typeof opts.body === "string" ? opts.body : JSON.stringify(opts.body) }
         : {}),
     };
-    try {
-      return await fetchWithTimeout(ctx.fetchImpl, url, init, {
-        timeoutMs: route.timeoutMs,
-        signal: ctx.signal,
-      });
-    } catch (err) {
-      throw toNetworkError(label, err);
-    }
+    return this.send(this.rawEndpoint(route, opts), init, label, ctx, route.timeoutMs, opts.signal);
   }
 
   async complete(
@@ -206,8 +274,24 @@ export class OpenAIAdapter implements ProviderAdapter {
     req: ChatRequest,
     ctx: AdapterContext,
   ): Promise<ChatResponse> {
-    const label = providerLabel(route);
-    const resp = await request(route, key, req, false, ctx);
+    const label = this.labelFor(route);
+    const resp = await this.send(
+      this.chatEndpoint(route),
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...this.authHeaders(route, key),
+          ...route.headers,
+        },
+        // buildBody merges this adapter's providerOptions namespaces.
+        body: JSON.stringify(this.buildBody(req, route.model, false)),
+      },
+      label,
+      ctx,
+      route.timeoutMs,
+      ctx.signal,
+    );
     await requireOk(resp, label);
     const json = await resp.json();
     return translateResponse(json, route.model, label);
@@ -219,8 +303,23 @@ export class OpenAIAdapter implements ProviderAdapter {
     req: ChatRequest,
     ctx: AdapterContext,
   ): Promise<AsyncIterable<ChatChunk>> {
-    const label = providerLabel(route);
-    const resp = await request(route, key, req, true, ctx);
+    const label = this.labelFor(route);
+    const resp = await this.send(
+      this.chatEndpoint(route),
+      {
+        method: "POST",
+        headers: {
+          "content-type": "application/json",
+          ...this.authHeaders(route, key),
+          ...route.headers,
+        },
+        body: JSON.stringify(this.buildBody(req, route.model, true)),
+      },
+      label,
+      ctx,
+      route.timeoutMs,
+      ctx.signal,
+    );
     await requireOk(resp, label);
     const body = resp.body;
     if (!body) throw new ProviderError(label, "network", `${label}: empty stream body`);
@@ -246,22 +345,17 @@ export class OpenAIAdapter implements ProviderAdapter {
     req: EmbeddingRequest,
     ctx: AdapterContext,
   ): Promise<EmbeddingResponse> {
-    const label = providerLabel(route);
-    const url = `${baseUrl(route)}/embeddings`;
+    const label = this.labelFor(route);
     const init: RequestInit = {
       method: "POST",
-      headers: headers(route, key),
+      headers: {
+        "content-type": "application/json",
+        ...this.authHeaders(route, key),
+        ...route.headers,
+      },
       body: JSON.stringify({ model: route.model, input: req.input }),
     };
-    let resp: Response;
-    try {
-      resp = await fetchWithTimeout(ctx.fetchImpl, url, init, {
-        timeoutMs: route.timeoutMs,
-        signal: ctx.signal,
-      });
-    } catch (err) {
-      throw toNetworkError(label, err);
-    }
+    const resp = await this.send(this.embedEndpoint(route), init, label, ctx, route.timeoutMs, ctx.signal);
     await requireOk(resp, label);
     const j = (await resp.json()) as Record<string, unknown>;
     const raw = Array.isArray(j.data) ? (j.data as Record<string, unknown>[]) : [];

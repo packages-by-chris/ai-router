@@ -1,0 +1,98 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "$id": "https://raw.githubusercontent.com/leanqdigital/ai-router/main/packages/core/schema/router-config.schema.json",
+  "title": "RouterConfig",
+  "description": "JSON-serializable configuration for @ai-router/core. The Python SDK validates against this same schema.",
+  "type": "object",
+  "required": ["routes"],
+  "additionalProperties": false,
+  "properties": {
+    "routes": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/definitions/ModelRoute" }
+    },
+    "strategy": {
+      "enum": ["fallback", "round-robin", "weighted", "least-latency"],
+      "default": "fallback"
+    }
+  },
+  "definitions": {
+    "ModelRoute": {
+      "type": "object",
+      "required": ["id", "provider", "model"],
+      "additionalProperties": false,
+      "properties": {
+        "id": { "type": "string", "minLength": 1 },
+        "provider": { "enum": ["openai", "openai-compatible", "azure", "anthropic", "gemini"] },
+        "model": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Provider-side model name; for azure the deployment name."
+        },
+        "apiKey": { "type": "string", "minLength": 1 },
+        "apiKeys": {
+          "type": "array",
+          "minItems": 1,
+          "items": { "type": "string", "minLength": 1 }
+        },
+        "baseUrl": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Required for openai-compatible and azure (resource root)."
+        },
+        "apiVersion": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Azure only: API version query parameter, e.g. \"2024-10-21\"."
+        },
+        "headers": {
+          "type": "object",
+          "additionalProperties": { "type": "string" }
+        },
+        "maxRetries": { "type": "integer", "minimum": 0, "default": 2 },
+        "timeoutMs": { "type": "integer", "minimum": 1, "default": 30000 },
+        "streamIdleTimeoutMs": { "type": "integer", "minimum": 1 },
+        "limit": { "$ref": "#/definitions/LimitRule" },
+        "budget": { "$ref": "#/definitions/BudgetRule" },
+        "weight": {
+          "type": "number",
+          "exclusiveMinimum": 0,
+          "default": 1,
+          "description": "Relative traffic share under strategy \"weighted\"."
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "provider": { "const": "openai-compatible" } } },
+          "then": { "required": ["baseUrl"] }
+        },
+        {
+          "if": { "properties": { "provider": { "const": "azure" } } },
+          "then": { "required": ["baseUrl", "apiVersion"] }
+        }
+      ],
+      "anyOf": [
+        { "required": ["apiKey"] },
+        { "required": ["apiKeys"] }
+      ]
+    },
+    "LimitRule": {
+      "type": "object",
+      "additionalProperties": false,
+      "properties": {
+        "rpm": { "type": "integer", "minimum": 1 },
+        "tpm": { "type": "integer", "minimum": 1 }
+      }
+    },
+    "BudgetRule": {
+      "type": "object",
+      "required": ["usd"],
+      "additionalProperties": false,
+      "properties": {
+        "usd": { "type": "number", "exclusiveMinimum": 0 },
+        "windowMs": { "type": "integer", "minimum": 1, "default": 60000 }
+      }
+    }
+  }
+}

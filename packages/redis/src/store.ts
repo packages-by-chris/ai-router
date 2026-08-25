@@ -81,6 +81,20 @@ redis.call('PEXPIRE', key, window_ms)
 return 1
 `;
 
+export const USED_SCRIPT = `
+local key = KEYS[1]
+local window_ms = tonumber(ARGV[1])
+local now = tonumber(ARGV[2])
+redis.call('ZREMRANGEBYSCORE', key, '-inf', now - window_ms)
+local entries = redis.call('ZRANGE', key, 0, -1)
+local used = 0
+for i = 1, #entries do
+  local c = tonumber(string.match(entries[i], ':(%d+)$'))
+  if c then used = used + c end
+end
+return used
+`;
+
 export interface RedisStoreOptions {
   /** Any client adapted to RedisEvalClient (see ioredisClient / nodeRedisClient). */
   client: RedisEvalClient;
@@ -151,6 +165,20 @@ export class RedisStore implements RateLimitStore {
       // Post-hoc accounting loss is acceptable in fail-open mode; surface it.
       this.onError?.(err);
       if (!this.failOpen) throw err;
+    }
+  }
+
+  async used(key: string, windowMs: number): Promise<number> {
+    try {
+      const raw = await this.client.eval(USED_SCRIPT, [this.prefix + key], [
+        windowMs,
+        this.now(),
+      ]);
+      return Math.max(0, Number(raw) || 0);
+    } catch (err) {
+      // Budget checks fail open like everything else in this store.
+      this.onError?.(err);
+      return 0;
     }
   }
 

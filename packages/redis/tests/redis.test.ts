@@ -4,6 +4,7 @@ import {
   RedisStore,
   RECORD_SCRIPT,
   TAKE_SCRIPT,
+  USED_SCRIPT,
   ioredisClient,
   nodeRedisClient,
   type RedisEvalClient,
@@ -40,6 +41,9 @@ class FakeRedis implements RedisEvalClient {
       await this.mem.record(keys[0]!, Number(args[0]!), Number(args[1]!));
       return 1;
     }
+    if (script === USED_SCRIPT) {
+      return this.mem.used(keys[0]!, Number(args[0]!));
+    }
     throw new Error(`unknown script: ${script.slice(0, 40)}`);
   }
 }
@@ -67,6 +71,27 @@ describe("RedisStore.take", () => {
     const store = new RedisStore({ client: new FakeRedis() });
     await store.record("tpm", 900, 60_000);
     expect((await store.take("tpm", 200, 60_000, 1000)).allowed).toBe(false);
+  });
+
+  test("used() reports current window spend without consuming (budget reads)", async () => {
+    const client = new FakeRedis();
+    const store = new RedisStore({ client, prefix: "ns:" });
+    // Engine records spend in micro-dollar integers (Redis Lua parses
+    // ':(%d+)$' — integers only).
+    await store.record("a:usd", 500_000, 60_000);
+    await store.record("a:usd", 250_000, 60_000);
+    expect(await store.used("a:usd", 60_000)).toBe(750_000);
+
+    const call = client.calls.find((c) => c.script === USED_SCRIPT)!;
+    expect(call.keys).toEqual(["ns:a:usd"]);
+    expect(call.args[0]).toBe(60_000);
+  });
+
+  test("used() fails open to 0 on client error", async () => {
+    const errors: unknown[] = [];
+    const store = new RedisStore({ client: new FakeRedis(true), onError: (e) => errors.push(e) });
+    expect(await store.used("k", 60_000)).toBe(0);
+    expect(errors).toHaveLength(1);
   });
 
   test("namespaces keys and passes cost/window/limit/now/member as args", async () => {

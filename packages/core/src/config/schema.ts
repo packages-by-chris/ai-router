@@ -5,7 +5,7 @@
  */
 
 /** Known provider ids. "openai-compatible" covers any OpenAI-shaped base URL. */
-export const PROVIDER_IDS = ["openai", "openai-compatible", "anthropic", "gemini"] as const;
+export const PROVIDER_IDS = ["openai", "openai-compatible", "azure", "anthropic", "gemini"] as const;
 export type ProviderId = (typeof PROVIDER_IDS)[number];
 
 export interface LimitRule {
@@ -15,18 +15,34 @@ export interface LimitRule {
   tpm?: number;
 }
 
+export interface BudgetRule {
+  /**
+   * Max USD spend across the rolling window (requires `pricing` for the
+   * route or model). Enforced pre-flight from recorded spend; actual cost
+   * is recorded post-hoc from provider usage reports.
+   */
+  usd: number;
+  /** Budget window length in ms. Default 60000 (one minute). */
+  windowMs?: number;
+}
+
 export interface ModelRoute {
   /** Logical name requests refer to, e.g. "fast". Must be unique. */
   id: string;
   provider: ProviderId;
-  /** Provider-side model name, e.g. "gpt-4o-mini". */
+  /** Provider-side model name, e.g. "gpt-4o-mini". For azure: the deployment name. */
   model: string;
   /** Single key (convenience). */
   apiKey?: string;
   /** Key pool. Merged with `apiKey`; engine rotates on rate_limit/auth/permission. */
   apiKeys?: string[];
-  /** Required for "openai-compatible", overrides the default for known providers. */
+  /**
+   * Required for "openai-compatible" and "azure" (resource root, e.g.
+   * https://{resource}.openai.azure.com), overrides the default otherwise.
+   */
   baseUrl?: string;
+  /** Azure only: API version query parameter, e.g. "2024-10-21". */
+  apiVersion?: string;
   headers?: Record<string, string>;
   /** Retries per route (same key or rotated). Default 2. */
   maxRetries?: number;
@@ -39,6 +55,12 @@ export interface ModelRoute {
    */
   streamIdleTimeoutMs?: number;
   limit?: LimitRule;
+  budget?: BudgetRule;
+  /**
+   * Weight for strategy "weighted" (relative traffic share; default 1).
+   * Ignored by other strategies.
+   */
+  weight?: number;
 }
 
 export interface RouterConfig {
@@ -50,9 +72,12 @@ export interface RouterConfig {
   /**
    * Route selection across the chain.
    * - "fallback" (default): strict order — chain[0] is primary until it fails.
-   * - "round-robin": each request rotates the starting point of the chain
-   *   cyclically. Only meaningful when tail routes are interchangeable
-   *   replicas of the primary.
+   * - "round-robin": each request rotates the starting point cyclically.
+   * - "weighted": each request picks the starting point proportional to
+   *   route `weight`, then falls back in chain order from there.
+   * - "least-latency": routes are tried fastest-first, using a per-route
+   *   exponential moving average of observed success latency (in-process).
+   * Only meaningful when tail routes are interchangeable with the primary.
    */
-  strategy?: "fallback" | "round-robin";
+  strategy?: "fallback" | "round-robin" | "weighted" | "least-latency";
 }

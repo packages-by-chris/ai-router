@@ -23,14 +23,23 @@ const ROUTE_FIELDS: ReadonlySet<string> = new Set([
   "apiKey",
   "apiKeys",
   "baseUrl",
+  "apiVersion",
   "headers",
   "maxRetries",
   "timeoutMs",
   "streamIdleTimeoutMs",
   "limit",
+  "budget",
+  "weight",
 ]);
 const LIMIT_FIELDS: ReadonlySet<string> = new Set(["rpm", "tpm"]);
-const STRATEGIES: ReadonlySet<string> = new Set(["fallback", "round-robin"]);
+const BUDGET_FIELDS: ReadonlySet<string> = new Set(["usd", "windowMs"]);
+const STRATEGIES: ReadonlySet<string> = new Set([
+  "fallback",
+  "round-robin",
+  "weighted",
+  "least-latency",
+]);
 
 /**
  * Recursively resolve `${VAR}` patterns in string values.
@@ -95,7 +104,9 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
 
   const strategy = interpolated.strategy;
   if (strategy !== undefined && (typeof strategy !== "string" || !STRATEGIES.has(strategy))) {
-    errors.push('config.strategy: must be "fallback" or "round-robin"');
+    errors.push(
+      'config.strategy: must be "fallback", "round-robin", "weighted", or "least-latency"',
+    );
   }
 
   const seenIds = new Set<string>();
@@ -167,8 +178,26 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       errors.push(`${at}.baseUrl: required when provider is "openai-compatible"`);
       return;
     }
+    if (provider === "azure" && (typeof raw.baseUrl !== "string" || raw.baseUrl.length === 0)) {
+      errors.push(`${at}.baseUrl: required when provider is "azure" (resource root, e.g. https://my-res.openai.azure.com)`);
+      return;
+    }
+    if (provider === "azure") {
+      if (typeof raw.apiVersion !== "string" || raw.apiVersion.length === 0) {
+        errors.push(`${at}.apiVersion: required when provider is "azure" (e.g. "2024-10-21")`);
+        return;
+      }
+    } else if (raw.apiVersion !== undefined) {
+      errors.push(`${at}.apiVersion: only valid when provider is "azure"`);
+      return;
+    }
     if (raw.baseUrl !== undefined && (typeof raw.baseUrl !== "string" || raw.baseUrl.length === 0)) {
       errors.push(`${at}.baseUrl: must be a non-empty string`);
+      return;
+    }
+
+    if (raw.weight !== undefined && !(typeof raw.weight === "number" && raw.weight > 0)) {
+      errors.push(`${at}.weight: must be a positive number`);
       return;
     }
 
@@ -222,6 +251,31 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       }
     }
 
+    let budget: ModelRoute["budget"];
+    if (raw.budget !== undefined) {
+      if (!isObject(raw.budget)) {
+        errors.push(`${at}.budget: expected an object`);
+        return;
+      }
+      for (const key of Object.keys(raw.budget)) {
+        if (!BUDGET_FIELDS.has(key)) {
+          errors.push(`${at}.budget.${key}: unknown field (known: usd, windowMs)`);
+        }
+      }
+      if (typeof raw.budget.usd !== "number" || !(raw.budget.usd > 0)) {
+        errors.push(`${at}.budget.usd: must be a positive number`);
+        return;
+      }
+      if (
+        raw.budget.windowMs !== undefined &&
+        !positiveInt(raw.budget.windowMs)
+      ) {
+        errors.push(`${at}.budget.windowMs: must be a positive integer`);
+        return;
+      }
+      budget = { usd: raw.budget.usd as number, ...(raw.budget.windowMs !== undefined ? { windowMs: raw.budget.windowMs as number } : {}) };
+    }
+
     routes.push({
       id,
       provider: provider as ModelRoute["provider"],
@@ -229,11 +283,14 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
       apiKey: raw.apiKey as string | undefined,
       apiKeys: (raw.apiKeys as string[] | undefined)?.slice(),
       baseUrl: raw.baseUrl as string | undefined,
+      apiVersion: raw.apiVersion as string | undefined,
       headers: raw.headers as Record<string, string> | undefined,
       maxRetries: raw.maxRetries as number | undefined,
       timeoutMs: raw.timeoutMs as number | undefined,
       streamIdleTimeoutMs: raw.streamIdleTimeoutMs as number | undefined,
       limit,
+      budget,
+      weight: raw.weight as number | undefined,
     });
   });
 

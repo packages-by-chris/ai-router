@@ -22,6 +22,7 @@ import type {
   ChatRequest,
   ChatResponse,
   Delta,
+  TextPart,
   ToolCall,
   Usage,
 } from "../types.js";
@@ -32,8 +33,20 @@ export const ANTHROPIC_VERSION = "2023-06-01";
 /** Anthropic requires max_tokens; applied when the unified request omits it. */
 export const ANTHROPIC_DEFAULT_MAX_TOKENS = 4096;
 
+/** reasoning_effort -> Anthropic thinking budget (tokens). */
+export const ANTHROPIC_THINKING_BUDGETS: Record<"low" | "medium" | "high", number> = {
+  low: 4096,
+  medium: 12288,
+  high: 24576,
+};
+
 function baseUrl(route: NormalizedRoute): string {
   return (route.baseUrl ?? ANTHROPIC_DEFAULT_BASE_URL).replace(/\/+$/, "");
+}
+
+/** True when the message opts into prompt caching for this provider. */
+function wantsCache(msg: ChatMessage): boolean {
+  return msg.providerOptions?.anthropic?.cache_control === true;
 }
 
 interface AnthropicTurn {
@@ -83,14 +96,17 @@ function pushUnifiedContent(
  * system messages -> top-level `system`; role:"tool" -> user-turn
  * tool_result blocks; tool_calls -> tool_use blocks (arguments parsed);
  * consecutive same-role messages merged into one turn (Anthropic rejects
- * some non-alternating histories); stop -> stop_sequences.
+ * some non-alternating histories); stop -> stop_sequences;
+ * reasoning_effort -> thinking budget; message providerOptions
+ * anthropic.cache_control stamps ephemeral cache breakpoints.
  */
 export function translateRequest(
   req: ChatRequest,
   providerModel: string,
   stream: boolean,
 ): Record<string, unknown> {
-  const systemParts: string[] = [];
+  const systemBlocks: Record<string, unknown>[] = [];
+  let systemHasCacheMarker = false;
   const turns: AnthropicTurn[] = [];
 
   const push = (role: AnthropicTurn["role"], block: Record<string, unknown>) => {
@@ -101,12 +117,27 @@ export function translateRequest(
 
   for (const msg of req.messages) {
     if (msg.role === "system") {
+      const flag = wantsCache(msg);
+      if (flag) systemHasCacheMarker = true;
       if (typeof msg.content === "string") {
-        if (msg.content.length > 0) systemParts.push(msg.content);
-      } else if (Array.isArray(msg.content)) {
-        for (const part of msg.content) {
-          if (part.type === "text" && part.text.length > 0) systemParts.push(part.text);
+        if (msg.content.length > 0) {
+          systemBlocks.push({
+            type: "text",
+            text: msg.content,
+            ...(flag ? { cache_control: { type: "ephemeral" } } : {}),
+          });
         }
+      } else if (Array.isArray(msg.content)) {
+        const parts = msg.content.filter(
+          (p): p is TextPart => p.type === "text" && p.text.length > 0,
+        );
+        parts.forEach((part, i) => {
+          systemBlocks.push({
+            type: "text",
+            text: part.text,
+            ...(flag && i === parts.length - 1 ? { cache_control: { type: "ephemeral" } } : {}),
+          });
+        });
       }
       continue;
     }
@@ -125,7 +156,12 @@ export function translateRequest(
       continue;
     }
     const role: AnthropicTurn["role"] = msg.role === "assistant" ? "assistant" : "user";
-    pushUnifiedContent(push, role, msg.content);
+    // Build this message's blocks locally so a trailing cache marker can be
+    // stamped on its LAST block (Anthropic's recommended breakpoint shape).
+    const local: Record<string, unknown>[] = [];
+    pushUnifiedContent((r, block) => {
+      if (r === role) local.push(block);
+    }, role, msg.content);
     for (const tc of msg.tool_calls ?? []) {
       let input: unknown = {};
       try {
@@ -133,7 +169,18 @@ export function translateRequest(
       } catch {
         input = {}; // malformed arguments degrade to an empty input object
       }
-      push(role, { type: "tool_use", id: tc.id, name: tc.function.name, input });
+      local.push({ type: "tool_use", id: tc.id, name: tc.function.name, input });
+    }
+    if (wantsCache(msg) && local.length > 0) {
+      local[local.length - 1] = {
+        ...local[local.length - 1]!,
+        cache_control: { type: "ephemeral" },
+      };
+    }
+    if (local.length > 0) {
+      const last = turns[turns.length - 1];
+      if (last && last.role === role) last.blocks.push(...local);
+      else turns.push({ role, blocks: local });
     }
   }
 
@@ -142,9 +189,20 @@ export function translateRequest(
     max_tokens: req.max_tokens ?? ANTHROPIC_DEFAULT_MAX_TOKENS,
     messages: turns.map((t) => ({ role: t.role, content: t.blocks })),
   };
-  if (systemParts.length > 0) body.system = systemParts.join("\n\n");
+  if (systemBlocks.length > 0) {
+    body.system = systemHasCacheMarker ? systemBlocks : systemBlocks.map((b) => b.text).join("\n\n");
+  }
   if (req.temperature !== undefined) body.temperature = req.temperature;
   if (req.top_p !== undefined) body.top_p = req.top_p;
+  // Thinking requires temperature/top_p to be unset (Anthropic constraint).
+  if (req.reasoning_effort !== undefined) {
+    body.thinking = {
+      type: "enabled",
+      budget_tokens: ANTHROPIC_THINKING_BUDGETS[req.reasoning_effort],
+    };
+    delete body.temperature;
+    delete body.top_p;
+  }
   if (req.stop !== undefined) body.stop_sequences = Array.isArray(req.stop) ? req.stop : [req.stop];
 
   const sendTools = req.tool_choice !== "none" && req.tools !== undefined && req.tools.length > 0;
@@ -161,6 +219,11 @@ export function translateRequest(
   }
 
   if (stream) body.stream = true;
+
+  // Request-level extras ride along under the anthropic namespace. Applied
+  // last so explicit keys win over translated ones.
+  const extra = req.providerOptions?.anthropic;
+  if (extra && typeof extra === "object") Object.assign(body, extra);
   return body;
 }
 
@@ -188,7 +251,18 @@ function toUsage(v: unknown): Usage | null {
   const input = u.input_tokens;
   const output = u.output_tokens;
   if (typeof input !== "number" || typeof output !== "number") return null;
-  return { prompt_tokens: input, completion_tokens: output, total_tokens: input + output };
+  // Cache tokens are billed separately from input_tokens; include them in
+  // total so tpm accounting sees them.
+  const cacheRead = typeof u.cache_read_input_tokens === "number" ? u.cache_read_input_tokens : 0;
+  const cacheWrite =
+    typeof u.cache_creation_input_tokens === "number" ? u.cache_creation_input_tokens : 0;
+  return {
+    prompt_tokens: input,
+    completion_tokens: output,
+    total_tokens: input + output + cacheRead + cacheWrite,
+    ...(cacheRead > 0 ? { cached_tokens: cacheRead } : {}),
+    ...(cacheWrite > 0 ? { cache_write_tokens: cacheWrite } : {}),
+  };
 }
 
 /** Anthropic message -> unified ChatResponse. */
@@ -197,10 +271,13 @@ export function translateResponse(json: unknown, providerModel: string): ChatRes
   const blocks = Array.isArray(j.content) ? (j.content as Record<string, unknown>[]) : [];
 
   let text = "";
+  let reasoning = "";
   const toolCalls: ToolCall[] = [];
   for (const block of blocks) {
     if (block.type === "text" && typeof block.text === "string") {
       text += block.text;
+    } else if (block.type === "thinking" && typeof block.thinking === "string") {
+      reasoning += block.thinking;
     } else if (block.type === "tool_use") {
       toolCalls.push({
         id: typeof block.id === "string" ? block.id : "",
@@ -226,6 +303,7 @@ export function translateResponse(json: unknown, providerModel: string): ChatRes
         message: {
           role: "assistant",
           content: text !== "" ? text : toolCalls.length > 0 ? null : "",
+          ...(reasoning !== "" ? { reasoning } : {}),
           ...(toolCalls.length > 0 ? { tool_calls: toolCalls } : {}),
         },
       },
@@ -343,6 +421,8 @@ export class AnthropicAdapter implements ProviderAdapter {
       let servedModel = model;
       let inputTokens: number | null = null;
       let outputTokens: number | null = null;
+      let cacheRead = 0;
+      let cacheWrite = 0;
       let finish: string | null = null;
 
       const chunk = (delta: Delta, extra: Partial<ChatChunk> = {}): ChatChunk => ({
@@ -369,6 +449,12 @@ export class AnthropicAdapter implements ProviderAdapter {
             if (typeof message.model === "string") servedModel = message.model;
             const usage = (message.usage ?? {}) as Record<string, unknown>;
             if (typeof usage.input_tokens === "number") inputTokens = usage.input_tokens;
+            if (typeof usage.cache_read_input_tokens === "number") {
+              cacheRead = usage.cache_read_input_tokens;
+            }
+            if (typeof usage.cache_creation_input_tokens === "number") {
+              cacheWrite = usage.cache_creation_input_tokens;
+            }
             yield chunk({ role: "assistant" });
             break;
           }
@@ -393,6 +479,8 @@ export class AnthropicAdapter implements ProviderAdapter {
             const index = typeof ev.index === "number" ? ev.index : 0;
             if (delta.type === "text_delta" && typeof delta.text === "string" && delta.text !== "") {
               yield chunk({ content: delta.text });
+            } else if (delta.type === "thinking_delta" && typeof delta.thinking === "string") {
+              yield chunk({ reasoning: delta.thinking });
             } else if (delta.type === "input_json_delta") {
               yield chunk({
                 tool_calls: [
@@ -410,12 +498,15 @@ export class AnthropicAdapter implements ProviderAdapter {
             break;
           }
           case "message_stop": {
+            const total = (inputTokens ?? 0) + (outputTokens ?? 0) + cacheRead + cacheWrite;
             const usage =
               inputTokens !== null || outputTokens !== null
                 ? {
                     prompt_tokens: inputTokens ?? 0,
                     completion_tokens: outputTokens ?? 0,
-                    total_tokens: (inputTokens ?? 0) + (outputTokens ?? 0),
+                    total_tokens: total,
+                    ...(cacheRead > 0 ? { cached_tokens: cacheRead } : {}),
+                    ...(cacheWrite > 0 ? { cache_write_tokens: cacheWrite } : {}),
                   }
                 : undefined;
             yield chunk({}, { finish_reason: finish, ...(usage ? { usage } : {}) });

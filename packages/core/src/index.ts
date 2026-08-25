@@ -1,18 +1,25 @@
 // Public surface of @ai-router/core.
 
 export { AIRouter, type AIRouterOptions } from "./router.js";
-export { RoutingEngine, estimateTokens } from "./engine.js";
+export { RoutingEngine, estimateTokens, computeCost } from "./engine.js";
 export type {
   AttemptEvent,
   AttemptOutcome,
   CallOptions,
+  CallSummaryEvent,
   EngineOptions,
   Middleware,
   RequestContext,
   RouterStats,
 } from "./engine.js";
 export { parseConfig } from "./config/parse.js";
-export type { LimitRule, ModelRoute, ProviderId, RouterConfig } from "./config/schema.js";
+export type {
+  BudgetRule,
+  LimitRule,
+  ModelRoute,
+  ProviderId,
+  RouterConfig,
+} from "./config/schema.js";
 export { PROVIDER_IDS } from "./config/schema.js";
 export {
   AIRouterError,
@@ -28,11 +35,13 @@ export {
 export type { AttemptRecord, ErrorKind, ProviderErrorOptions } from "./errors.js";
 export { MemoryStore } from "./limiter/memory.js";
 export type { RateLimitDecision, RateLimitStore } from "./limiter/store.js";
-export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, providerLabel as openaiProviderLabel, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
+export { OpenAIAdapter, OPENAI_DEFAULT_BASE_URL, providerLabel as openaiProviderLabel, mergeProviderOptions, usageDetails, translateChunk, translateRequest, translateResponse } from "./providers/openai.js";
+export { AzureAdapter, AZURE_DEFAULT_API_VERSION } from "./providers/azure.js";
 export {
   AnthropicAdapter,
   ANTHROPIC_DEFAULT_BASE_URL,
   ANTHROPIC_DEFAULT_MAX_TOKENS,
+  ANTHROPIC_THINKING_BUDGETS,
   ANTHROPIC_VERSION,
   mapFinishReason as mapAnthropicFinishReason,
   translateRequest as translateAnthropicRequest,
@@ -41,6 +50,7 @@ export {
 export {
   GeminiAdapter,
   GEMINI_DEFAULT_BASE_URL,
+  GEMINI_THINKING_BUDGETS,
   mapFinishReason as mapGeminiFinishReason,
   translateRequest as translateGeminiRequest,
   translateResponse as translateGeminiResponse,
@@ -61,6 +71,8 @@ export type {
   EmbeddingData,
   EmbeddingRequest,
   EmbeddingResponse,
+  ProviderOptions,
+  ResponseFormat,
   Role,
   TokenPrice,
   Tool,

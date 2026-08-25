@@ -43,6 +43,14 @@ export interface ChatMessage {
   name?: string;
   tool_calls?: ToolCall[];
   tool_call_id?: string;
+  /**
+   * Assistant-only: provider reasoning/thinking text that preceded the
+   * content (populated from Anthropic thinking blocks, Gemini thought
+   * parts, or OpenAI-compatible reasoning deltas).
+   */
+  reasoning?: string;
+  /** Per-message adapter extras (e.g. anthropic.cache_control for prompts). */
+  providerOptions?: ProviderOptions;
 }
 
 export interface Tool {
@@ -54,6 +62,28 @@ export interface Tool {
   };
 }
 
+export type ResponseFormat =
+  | { type: "text" }
+  | { type: "json_object" }
+  | {
+      type: "json_schema";
+      json_schema: {
+        /** Optional name (OpenAI uses it; others drop it). */
+        name?: string;
+        schema: Record<string, unknown>;
+        /** OpenAI strict mode hint; other providers ignore it. */
+        strict?: boolean;
+      };
+    };
+
+/**
+ * Provider-specific escape hatch INSIDE unified calls — unlike router.raw(),
+ * these extras ride along with translation, retries, fallback, and rate
+ * limiting. Keys are adapter namespaces ("openai", "azure", "anthropic",
+ * "gemini"); values are shallow-merged into that provider's wire body.
+ */
+export type ProviderOptions = Record<string, Record<string, unknown>>;
+
 /** Logical request. `model` is a route id from the config, not a provider model name. */
 export interface ChatRequest {
   model: string;
@@ -64,7 +94,15 @@ export interface ChatRequest {
   top_p?: number;
   max_tokens?: number;
   stop?: string | string[];
-  response_format?: { type: "text" | "json_object" };
+  response_format?: ResponseFormat;
+  /**
+   * Reasoning effort hint for reasoning models. Mapped per provider:
+   * OpenAI `reasoning_effort`; Anthropic thinking budget; Gemini
+   * thinkingConfig.thinkingBudget. Providers without reasoning drop it.
+   */
+  reasoning_effort?: "low" | "medium" | "high";
+  /** Per-request adapter extras merged into the provider wire body. */
+  providerOptions?: ProviderOptions;
   user?: string;
 }
 
@@ -72,12 +110,22 @@ export interface Usage {
   prompt_tokens: number;
   completion_tokens: number;
   total_tokens: number;
+  /** Prompt tokens served from the provider's cache (billed at cache_read). */
+  cached_tokens?: number;
+  /** Prompt tokens written to the provider's cache (Anthropic cache_creation). */
+  cache_write_tokens?: number;
+  /** Completion tokens spent on internal reasoning (o-series, Gemini thoughts). */
+  reasoning_tokens?: number;
 }
 
 /** USD price per 1M tokens, used by engine cost accounting. */
 export interface TokenPrice {
   input: number;
   output: number;
+  /** Price for cached prompt tokens. Default: same as input. */
+  cache_read?: number;
+  /** Price for tokens written to cache. Default: same as input. */
+  cache_write?: number;
 }
 
 export interface ChatResponse {
@@ -108,6 +156,8 @@ export interface ToolCallDelta {
 export interface Delta {
   role?: Role;
   content?: string;
+  /** Reasoning/thinking text delta (before the visible content). */
+  reasoning?: string;
   tool_calls?: ToolCallDelta[];
 }
 
