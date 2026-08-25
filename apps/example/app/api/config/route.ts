@@ -1,9 +1,10 @@
-import { describeRoutes, removeRoute, setConfig } from "@/lib/router";
+import { describeState, removeRoute, setConfig } from "@/lib/router";
 
-/** GET /api/config — current chain, keys masked. */
+/** GET /api/config — current chain, strategy, demo pricing (keys masked). */
 export async function GET() {
   try {
-    return Response.json({ routes: describeRoutes() });
+    const state = describeState();
+    return Response.json(state);
   } catch (err) {
     return Response.json({ routes: [], notice: (err as Error).message });
   }
@@ -11,7 +12,8 @@ export async function GET() {
 
 /**
  * POST /api/config — replace the fallback chain from the UI.
- * Body: { routes: [{ id, provider, model, apiKey?, baseUrl?, limit?, _keepKeyOf? }] }
+ * Body: { routes, strategy?, pricing? } where pricing maps routeId to
+ * [usdPer1MInputTokens, usdPer1MOutputTokens] for cost-aware strategies.
  * Routes omitting credentials may set _keepKeyOf to reuse a stored key
  * (edit flow). Validation errors return 400 with aggregated messages.
  */

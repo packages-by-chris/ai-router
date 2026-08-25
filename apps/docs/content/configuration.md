@@ -26,9 +26,15 @@ problems listed — useful when the config comes from a user-facing form.
 ```ts
 interface RouterConfig {
   routes: ModelRoute[];
-  strategy?: "fallback" | "round-robin" | "weighted" | "least-latency";
+  strategy?: RoutingStrategy;
+  // RoutingStrategy = "fallback" | "round-robin" | "weighted" | "least-latency"
+  //                 | "cheapest" | "balanced" | "quality-first"
 }
 ```
+
+Strategies beyond `fallback` are covered in
+[Routing & fallback](/docs/routing) and
+[Cost, latency & quality](/docs/routing-policies).
 
 `routes` is an **ordered fallback chain**. A request for route id at index `i`
 tries routes `i`, `i+1`, … in order until one succeeds.
@@ -54,6 +60,29 @@ tries routes `i`, `i+1`, … in order until one succeeds.
 | `limit?` | `LimitRule` | rpm/tpm rate limit — see [Rate limiting](/docs/rate-limiting). |
 | `budget?` | `BudgetRule` | Rolling-window USD spend cap — see [Rate limiting](/docs/rate-limiting). |
 | `weight?` | `number` | Relative traffic share under `strategy: "weighted"` (default 1). |
+| `capabilities?` | `ModelCapabilities` | Declared profile enabling pre-flight elimination — see [Capability routing](/docs/capability-routing). |
+
+### ModelCapabilities
+
+```ts
+interface ModelCapabilities {
+  streaming?: boolean;
+  tools?: boolean;
+  vision?: boolean;
+  json?: boolean;          // accepts response_format json_object
+  structuredOutput?: boolean; // accepts schema-constrained output
+  reasoning?: boolean;     // handles reasoning_effort hints
+  audio?: boolean;
+  embeddings?: boolean;
+  multimodal?: boolean;
+  longContext?: boolean;
+  contextWindow?: number;  // max prompt tokens; larger requests are eliminated
+}
+```
+
+Omitted `capabilities` = the route is always eligible (backwards
+compatibility). Declared = exhaustive profile: omitted keys mean "not
+supported" for elimination.
 
 ## BudgetRule
 

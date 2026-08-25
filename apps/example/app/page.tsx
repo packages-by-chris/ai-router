@@ -1,19 +1,26 @@
 "use client";
 
 import { useEffect, useRef, useState } from "react";
-import type { ReactNode } from "react";
-import type { AttemptEvent, ChatFrame, Stats, TestResult } from "@/lib/protocol";
+import type {
+  AttemptEvent,
+  ChatFrame,
+  RoutingExplanation,
+  RouterStats,
+  Stats,
+  TestResult,
+} from "@/lib/protocol";
 import type { ServerRouteDTO } from "@/lib/router";
+import { Header } from "./components/Header";
+import { ChainRail } from "./components/ChainRail";
+import {
+  RouteEditorModal,
+  emptyDraft,
+  type RouteDraft,
+} from "./components/RouteEditorModal";
+import { EventTimeline, Formatted, PlanCard } from "./components/Traffic";
+import { HealthRail } from "./components/HealthRail";
 
-/** Local alias — the server DTO is the single source of truth. */
 type ServerRoute = ServerRouteDTO;
-
-/** Docs site — override with NEXT_PUBLIC_DOCS_URL. */
-const DOCS_URL =
-  process.env.NEXT_PUBLIC_DOCS_URL ??
-  (process.env.NODE_ENV === "production"
-    ? "https://airouter.techyatraa.com"
-    : "http://localhost:3001");
 
 interface Msg {
   role: "user" | "assistant" | "error";
@@ -21,246 +28,46 @@ interface Msg {
   events?: AttemptEvent[];
   finish?: string | null;
   stats?: Stats;
+  plan?: RoutingExplanation;
 }
 
-interface RouteDraft {
-  id: string;
-  provider: string;
-  model: string;
-  apiKey: string;
-  baseUrl: string;
-  rpm: string;
-  tpm: string;
-  maxRetries: string;
-  timeoutMs: string;
+/** Per-call routing controls (toolbar above the composer). */
+interface CallControls {
+  task: string;
+  deadlineMs: string;
+  maxCostUsd: string;
+  maxLatencyMs: string;
+  requireTools: boolean;
 }
 
-const PROVIDERS = [
-  "openai",
-  "azure",
-  "anthropic",
-  "gemini",
-  "openai-compatible",
-  // preset catalog picks — full list in @ai-router/core PROVIDER_PRESETS
-  "groq",
-  "deepseek",
-  "openrouter",
-  "mistral",
-  "together",
-  "xai",
-  "perplexity",
-  "ollama", // keyless local runtime
-];
-
-/** Presets that need no API key at all. */
-const KEYLESS_PROVIDERS = new Set(["ollama", "lmstudio", "vllm"]);
-
-/** Numeric draft fields → min value + human message. */
-const NUM_FIELDS = {
-  rpm: { min: 1, msg: "The RPM limit needs to be 1 or more." },
-  tpm: { min: 1, msg: "The TPM limit needs to be 1 or more." },
-  maxRetries: { min: 0, msg: "Retries needs to be 0 or more." },
-  timeoutMs: { min: 1, msg: "The timeout needs to be at least 1 ms — try 30000." },
-} as const;
-
-type NumField = keyof typeof NUM_FIELDS;
-
-const emptyDraft = (): RouteDraft => ({
-  id: "",
-  provider: "openai",
-  model: "",
-  apiKey: "",
-  baseUrl: "",
-  rpm: "",
-  tpm: "",
-  maxRetries: "",
-  timeoutMs: "",
-});
-
-/** Markdown-lite: fenced code blocks, `inline code`, **bold**, *italic*, # headings, - lists. */
-function renderInline(text: string, keyPrefix: string): ReactNode {
-  const parts = text.split(/(\*\*[^*]+\*\*|\*[^*\n]+\*|`[^`]+`)/g);
-  return parts.map((part, i) => {
-    const key = `${keyPrefix}-${i}`;
-    if (part.startsWith("**") && part.endsWith("**")) {
-      return <strong key={key}>{part.slice(2, -2)}</strong>;
-    }
-    if (part.startsWith("*") && part.endsWith("*") && part.length > 2) {
-      return <em key={key}>{part.slice(1, -1)}</em>;
-    }
-    if (part.startsWith("`") && part.endsWith("`") && part.length > 2) {
-      return (
-        <code key={key} className="inline-code">
-          {part.slice(1, -1)}
-        </code>
-      );
-    }
-    return <span key={key}>{part}</span>;
-  });
-}
-
-function Formatted({ text, streaming }: { text: string; streaming: boolean }) {
-  const blocks = text.split(/```/);
-  const elements: ReactNode[] = [];
-  let key = 0;
-
-  for (let i = 0; i < blocks.length; i++) {
-    if (i % 2 === 1) {
-      elements.push(
-        <pre key={key++} className="codeblock">
-          <code>{blocks[i]!.replace(/^\w*\n/, "")}</code>
-        </pre>,
-      );
-    } else {
-      const lines = blocks[i]!.split("\n");
-      let listItems: ReactNode[] = [];
-
-      const flushList = () => {
-        if (listItems.length > 0) {
-          elements.push(<ul key={key++}>{listItems}</ul>);
-          listItems = [];
-        }
-      };
-
-      for (const line of lines) {
-        const trimmed = line.trim();
-        // Headings
-        const headingMatch = trimmed.match(/^(#{1,4})\s+(.*)/);
-        if (headingMatch) {
-          flushList();
-          const level = headingMatch[1]!.length;
-          const heading = renderInline(headingMatch[2]!, `${key}`);
-          if (level === 1) elements.push(<h1 key={key++}>{heading}</h1>);
-          else if (level === 2) elements.push(<h2 key={key++}>{heading}</h2>);
-          else if (level === 3) elements.push(<h3 key={key++}>{heading}</h3>);
-          else elements.push(<h4 key={key++}>{heading}</h4>);
-          continue;
-        }
-        // Unordered list items
-        const listMatch = trimmed.match(/^[-*]\s+(.*)/);
-        if (listMatch) {
-          listItems.push(
-            <li key={key++}>{renderInline(listMatch[1]!, `${key}`)}</li>,
-          );
-          continue;
-        }
-        // Ordered list items
-        const olMatch = trimmed.match(/^\d+\.\s+(.*)/);
-        if (olMatch) {
-          listItems.push(
-            <li key={key++}>{renderInline(olMatch[1]!, `${key}`)}</li>,
-          );
-          continue;
-        }
-        // Horizontal rule
-        if (/^[-*_]{3,}\s*$/.test(trimmed)) {
-          flushList();
-          elements.push(<hr key={key++} />);
-          continue;
-        }
-        // Empty line = paragraph break
-        if (trimmed === "") {
-          flushList();
-          continue;
-        }
-        // Regular paragraph line
-        flushList();
-        elements.push(
-          <p key={key++}>
-            {renderInline(trimmed, `${key}`)}
-          </p>,
-        );
-      }
-      flushList();
-    }
-  }
-
-  return (
-    <>
-      {elements}
-      {streaming && <span className="caret" />}
-    </>
-  );
-}
-
-/** Field-level checks with copy a human can act on, not ConfigError paths. */
-function validateDraft(
-  draft: RouteDraft,
-  routes: ServerRoute[],
-  editingId: string | null,
-): Partial<Record<keyof RouteDraft, string>> {
-  const errors: Partial<Record<keyof RouteDraft, string>> = {};
-  const id = draft.id.trim();
-
-  if (!id) {
-    errors.id = "Give this stop a name — something short like “fast” or “backup”.";
-  } else if (!/^[a-zA-Z0-9-]+$/.test(id)) {
-    errors.id = "Stop names can only use letters, numbers, and dashes — no spaces.";
-  } else if (routes.some((r) => r.id === id && id !== editingId)) {
-    errors.id = `You already have a stop named “${id}” — pick a different name.`;
-  }
-
-  if (!draft.model.trim()) {
-    errors.model = "Add the model this stop should call — e.g. gpt-4o-mini.";
-  }
-
-  if (
-    editingId === null &&
-    !draft.apiKey.trim() &&
-    !KEYLESS_PROVIDERS.has(draft.provider)
-  ) {
-    errors.apiKey = `Paste an API key for ${draft.provider} — it stays in this server’s memory only.`;
-  }
-
-  const url = draft.baseUrl.trim();
-  if (draft.provider === "openai-compatible" && !url) {
-    errors.baseUrl =
-      "OpenAI-compatible endpoints need a base URL — e.g. https://api.together.xyz/v1";
-  } else if (url && !/^https?:\/\//i.test(url)) {
-    errors.baseUrl = "The base URL should start with http:// or https://.";
-  }
-
-  for (const field of Object.keys(NUM_FIELDS) as NumField[]) {
-    const value = draft[field].trim();
-    if (value && !(Number(value) >= NUM_FIELDS[field].min)) {
-      errors[field] = NUM_FIELDS[field].msg;
-    }
-  }
-
-  return errors;
-}
-
-/** Translate core ConfigError strings into plain language, just in case. */
-function friendlyConfigError(raw: string): string {
-  if (/duplicate route id/.test(raw))
-    return "Two stops ended up with the same name — each one needs its own name.";
-  if (/needs "apiKey"|needs \\"apiKey\\"/.test(raw))
-    return "One of your stops is missing an API key.";
-  if (/unknown provider/.test(raw))
-    return "Pick one of the supported providers: openai, azure, anthropic, gemini, openai-compatible, or a preset (groq, deepseek, ollama, …).";
-  if (/environment variable .* is not set/.test(raw))
-    return "A field contains ${…} but that environment variable isn’t set on the server — paste the real value instead.";
-  if (/baseUrl.*required when provider is .openai-compatible./.test(raw))
-    return "OpenAI-compatible endpoints need a base URL — e.g. https://api.together.xyz/v1";
-  if (/must not be empty/.test(raw)) return "Keep at least one stop in the chain.";
-  return raw;
-}
+const EMPTY_CONTROLS: CallControls = {
+  task: "",
+  deadlineMs: "",
+  maxCostUsd: "",
+  maxLatencyMs: "",
+  requireTools: false,
+};
 
 export default function Page() {
-  // chain (server state, masked)
+  // ── chain state (server-backed) ─────────────────────────────────────────
   const [routes, setRoutes] = useState<ServerRoute[]>([]);
-  const [configMsg, setConfigMsg] = useState<{ ok: boolean; text: string } | null>(null);
+  const [strategy, setStrategy] = useState("");
+  const [configError, setConfigError] = useState<string | null>(null);
 
-  // draft form — null = list view
+  // ── editor modal ────────────────────────────────────────────────────────
   const [draft, setDraft] = useState<RouteDraft | null>(null);
-  const [editingId, setEditingId] = useState<string | null>(null); // null = new route
-  const [draftErrors, setDraftErrors] = useState<Partial<Record<keyof RouteDraft, string>> | null>(null);
+  const [editingId, setEditingId] = useState<string | null>(null);
 
-  // chain tester
-  const [testing, setTesting] = useState(false);
-  const [testResults, setTestResults] = useState<TestResult[] | null>(null);
+  // ── chain probe ─────────────────────────────────────────────────────────
+  const [probing, setProbing] = useState(false);
+  const [probes, setProbes] = useState<Map<string, TestResult>>(new Map());
 
-  // chat
+  // ── telemetry rail ──────────────────────────────────────────────────────
+  const [healthOpen, setHealthOpen] = useState(false);
+  const [engineStats, setEngineStats] = useState<RouterStats | null>(null);
+
+  // ── traffic ─────────────────────────────────────────────────────────────
+  const [controls, setControls] = useState<CallControls>(EMPTY_CONTROLS);
   const [messages, setMessages] = useState<Msg[]>([]);
   const [input, setInput] = useState("");
   const [busy, setBusy] = useState(false);
@@ -272,106 +79,112 @@ export default function Page() {
       logRef.current?.scrollTo({ top: logRef.current.scrollHeight }),
     );
 
-  const refreshChain = () =>
+  function refreshChain() {
     fetch("/api/config")
       .then((r) => r.json())
-      .then((data) => setRoutes(data.routes ?? []))
+      .then((data: { routes?: ServerRoute[]; strategy?: string }) => {
+        setRoutes(data.routes ?? []);
+        setStrategy(data.strategy ?? "");
+      })
       .catch(() => {});
+  }
 
   useEffect(() => {
-    void refreshChain();
+    refreshChain();
   }, []);
 
-  function updateDraft(patch: Partial<RouteDraft>) {
-    setDraft((prev) => (prev ? { ...prev, ...patch } : prev));
-    setDraftErrors((prev) => {
-      if (!prev) return prev;
-      const next = { ...prev };
-      for (const key of Object.keys(patch)) delete next[key as keyof RouteDraft];
-      return Object.keys(next).length > 0 ? next : null;
-    });
-  }
-
-  function startAdd() {
-    setDraft(emptyDraft());
-    setEditingId(null);
-    setConfigMsg(null);
-    setDraftErrors(null);
-  }
-
-  function startEdit(route: ServerRoute) {
-    setDraft({
-      id: route.id,
-      provider: route.provider,
-      model: route.model,
-      apiKey: "", // blank = keep stored key
-      baseUrl: route.baseUrl ?? "",
-      rpm: route.limit?.rpm ? String(route.limit.rpm) : "",
-      tpm: route.limit?.tpm ? String(route.limit.tpm) : "",
-      maxRetries: route.maxRetries !== undefined ? String(route.maxRetries) : "",
-      timeoutMs: route.timeoutMs !== undefined ? String(route.timeoutMs) : "",
-    });
-    setEditingId(route.id);
-    setConfigMsg(null);
-    setDraftErrors(null);
-  }
-
-  function cancelDraft() {
-    setDraft(null);
-    setEditingId(null);
-    setConfigMsg(null);
-    setDraftErrors(null);
-  }
-
-  async function saveDraft() {
-    if (!draft) return;
-    setConfigMsg(null);
-
-    const problems = validateDraft(draft, routes, editingId);
-    if (Object.keys(problems).length > 0) {
-      setDraftErrors(problems);
-      return;
+  async function refreshHealth() {
+    try {
+      const res = await fetch("/api/stats");
+      setEngineStats(await res.json());
+    } catch {
+      /* telemetry is best-effort */
     }
-    setDraftErrors(null);
+  }
 
-    const isEdit = editingId !== null;
-    const limit: { rpm?: number; tpm?: number } = {};
-    if (draft.rpm.trim()) limit.rpm = Number(draft.rpm);
-    if (draft.tpm.trim()) limit.tpm = Number(draft.tpm);
+  useEffect(() => {
+    if (!healthOpen) return;
+    refreshHealth();
+    const t = setInterval(refreshHealth, 5_000);
+    return () => clearInterval(t);
+  }, [healthOpen]);
 
-    const route: Record<string, unknown> = {
-      id: draft.id.trim(),
-      provider: draft.provider,
-      model: draft.model.trim(),
-      ...(isEdit && !draft.apiKey.trim()
-        ? { _keepKeyOf: editingId }
-        : { apiKey: draft.apiKey.trim() }),
-      ...(draft.baseUrl.trim() ? { baseUrl: draft.baseUrl.trim() } : {}),
-      ...(Object.keys(limit).length > 0 ? { limit } : {}),
-      ...(draft.maxRetries.trim() ? { maxRetries: Number(draft.maxRetries) } : {}),
-      ...(draft.timeoutMs.trim() ? { timeoutMs: Number(draft.timeoutMs) } : {}),
-    };
+  // ── chain mutations ─────────────────────────────────────────────────────
 
+  async function saveConfig(body: Record<string, unknown>): Promise<string | null> {
     const res = await fetch("/api/config", {
       method: "POST",
       headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        routes: isEdit
-          ? replaceById(routes, editingId!, route)
-          : [...routes.map(stripToInput), route],
-      }),
+      body: JSON.stringify({ ...body, ...(strategy ? { strategy } : {}) }),
     });
-    const data = await res.json();
     if (!res.ok) {
-      setConfigMsg({
-        ok: false,
-        text: friendlyConfigError(data.error ?? `HTTP ${res.status}`),
-      });
-      return;
+      const data = await res.json().catch(() => ({ error: res.statusText }));
+      return data.error ?? `HTTP ${res.status}`;
     }
-    setDraft(null);
-    setEditingId(null);
-    void refreshChain();
+    refreshChain();
+    return null;
+  }
+
+  /** Turn a draft into a config route object. */
+  function draftToRoute(d: RouteDraft, editingId2: string | null): Record<string, unknown> {
+    const limit: { rpm?: number; tpm?: number } = {};
+    if (d.rpm.trim()) limit.rpm = Number(d.rpm);
+    if (d.tpm.trim()) limit.tpm = Number(d.tpm);
+
+    const anyCap =
+      Object.values(d.caps).some(Boolean) || d.contextWindow.trim() !== "";
+    const capabilities = anyCap
+      ? {
+          ...(d.caps.tools ? { tools: true } : {}),
+          ...(d.caps.vision ? { vision: true } : {}),
+          ...(d.caps.structuredOutput ? { structuredOutput: true } : {}),
+          ...(d.caps.streaming ? { streaming: true } : {}),
+          ...(d.caps.reasoning ? { reasoning: true } : {}),
+          ...(d.caps.embeddings ? { embeddings: true } : {}),
+          ...(d.contextWindow.trim()
+            ? { contextWindow: Number(d.contextWindow) }
+            : {}),
+        }
+      : undefined;
+
+    return {
+      id: d.id.trim(),
+      provider: d.provider,
+      model: d.model.trim(),
+      ...(editingId2 && !d.apiKey.trim()
+        ? { _keepKeyOf: editingId2 }
+        : { apiKey: d.apiKey.trim() }),
+      ...(d.baseUrl.trim() ? { baseUrl: d.baseUrl.trim() } : {}),
+      ...(Object.keys(limit).length > 0 ? { limit } : {}),
+      ...(d.maxRetries.trim() ? { maxRetries: Number(d.maxRetries) } : {}),
+      ...(d.timeoutMs.trim() ? { timeoutMs: Number(d.timeoutMs) } : {}),
+      ...(d.weight.trim() ? { weight: Number(d.weight) } : {}),
+      ...(capabilities ? { capabilities } : {}),
+    };
+  }
+
+  async function handleSave(
+    d: RouteDraft,
+    editId: string | null,
+  ): Promise<string | null> {
+    const route = draftToRoute(d, editId);
+    const pricing =
+      d.priceIn.trim() || d.priceOut.trim()
+        ? {
+            [route.id as string]: [
+              Number(d.priceIn.trim() || 0),
+              Number(d.priceOut.trim() || 0),
+            ],
+          }
+        : undefined;
+
+    const routesPayload = editId
+      ? routes.map((r) => stripToInput(r)).map((r) =>
+          r.id === editId ? route : r,
+        )
+      : [...routes.map(stripToInput), route];
+
+    return saveConfig({ routes: routesPayload, ...(pricing ? { pricing } : {}) });
   }
 
   async function removeRoute(id: string) {
@@ -380,102 +193,63 @@ export default function Page() {
     });
     if (!res.ok) {
       const data = await res.json().catch(() => ({ error: res.statusText }));
-      setConfigMsg({ ok: false, text: data.error });
+      setConfigError(data.error ?? res.statusText);
       return;
     }
-    void refreshChain();
+    setConfigError(null);
+    refreshChain();
   }
 
-  async function moveRoute(fromIndex: number, toIndex: number) {
-    if (toIndex < 0 || toIndex >= routes.length) return;
+  async function moveRoute(from: number, to: number) {
+    if (to < 0 || to >= routes.length) return;
     const reordered = [...routes];
-    const [moved] = reordered.splice(fromIndex, 1);
-    reordered.splice(toIndex, 0, moved!);
-
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({ routes: reordered.map(stripToInput) }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({ error: res.statusText }));
-      setConfigMsg({ ok: false, text: data.error });
-      return;
-    }
-    void refreshChain();
+    const [moved] = reordered.splice(from, 1);
+    reordered.splice(to, 0, moved!);
+    await saveConfig({ routes: reordered.map(stripToInput) });
   }
 
   async function duplicateRoute(route: ServerRoute) {
-    const baseId = route.id.replace(/-\d+$/, "");
-    let newId = `${baseId}-1`;
+    const base = route.id.replace(/-\d+$/, "");
+    let id = `${base}-1`;
     let n = 2;
-    while (routes.some((r) => r.id === newId)) {
-      newId = `${baseId}-${n++}`;
-    }
-
+    while (routes.some((r) => r.id === id)) id = `${base}-${n++}`;
     const dupe = {
-      id: newId,
-      provider: route.provider,
-      model: route.model,
+      ...stripToInput(route),
+      id,
       _keepKeyOf: route.id,
-      ...(route.baseUrl ? { baseUrl: route.baseUrl } : {}),
-      ...(route.limit?.rpm || route.limit?.tpm
-        ? { limit: { rpm: route.limit.rpm, tpm: route.limit.tpm } }
-        : {}),
-      ...(route.maxRetries !== undefined ? { maxRetries: route.maxRetries } : {}),
-      ...(route.timeoutMs !== undefined ? { timeoutMs: route.timeoutMs } : {}),
     };
-
-    const res = await fetch("/api/config", {
-      method: "POST",
-      headers: { "content-type": "application/json" },
-      body: JSON.stringify({
-        routes: [...routes.map(stripToInput), dupe],
-      }),
-    });
-    if (!res.ok) {
-      const data = await res.json().catch(() => ({ error: res.statusText }));
-      setConfigMsg({ ok: false, text: data.error });
-      return;
-    }
-    void refreshChain();
+    await saveConfig({ routes: [...routes.map(stripToInput), dupe] });
   }
 
   async function testChain() {
-    setTesting(true);
-    setTestResults(null);
+    setProbing(true);
+    setProbes(new Map());
     try {
       const res = await fetch("/api/test-chain", { method: "POST" });
-      const data = await res.json();
-      setTestResults(data.results ?? []);
+      const data = (await res.json()) as { results?: TestResult[] };
+      const map = new Map<string, TestResult>();
+      for (const r of data.results ?? []) map.set(r.id, r);
+      setProbes(map);
     } catch (err) {
-      setTestResults([
-        {
-          id: "?",
-          provider: "?",
-          model: "?",
-          ok: false,
-          ms: 0,
-          error: (err as Error).message,
-        },
-      ]);
+      setConfigError((err as Error).message);
     } finally {
-      setTesting(false);
+      setProbing(false);
     }
   }
+
+  // ── chat ────────────────────────────────────────────────────────────────
 
   async function send() {
     const text = input.trim();
     if (!text || busy) return;
 
-    // Error bubbles are UI-only — never send them upstream as a turn.
     const history = [
       ...messages
         .filter((m) => m.role !== "error")
         .map((m) => ({ role: m.role, content: m.content })),
       { role: "user" as const, content: text },
     ];
-    setMessages([...history, { role: "assistant", content: "", events: [] }]);
+    setMessages([...history, { role: "assistant", content: "" }]);
     setInput("");
     setBusy(true);
     scrollDown();
@@ -490,20 +264,28 @@ export default function Page() {
     const abort = new AbortController();
     abortRef.current = abort;
 
+    const c = controls;
+    const routingExtras = {
+      ...(c.task.trim() ? { task: c.task.trim() } : {}),
+      ...(c.deadlineMs.trim() ? { deadlineMs: Number(c.deadlineMs) } : {}),
+      ...(c.maxCostUsd.trim() ? { maxCostUsd: Number(c.maxCostUsd) } : {}),
+      ...(c.maxLatencyMs.trim() ? { maxLatencyMs: Number(c.maxLatencyMs) } : {}),
+      ...(c.requireTools ? { requireTools: true } : {}),
+    };
+
     try {
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "content-type": "application/json" },
         body: JSON.stringify({
           messages: history.map((m) => ({ role: m.role, content: m.content })),
+          ...routingExtras,
         }),
         signal: abort.signal,
       });
 
       if (!res.ok || !res.body) {
-        const detail = await res
-          .json()
-          .catch(() => ({ error: res.statusText }));
+        const detail = await res.json().catch(() => ({ error: res.statusText }));
         throw new Error(detail.error ?? `HTTP ${res.status}`);
       }
 
@@ -521,7 +303,10 @@ export default function Page() {
           if (!line.trim()) continue;
           const msg = JSON.parse(line) as ChatFrame;
 
-          if (msg.type === "event") {
+          if (msg.type === "plan") {
+            const { type: _t, ...plan } = msg;
+            patchLast((m) => ({ ...m, plan }));
+          } else if (msg.type === "event") {
             patchLast((m) => ({ ...m, events: [...(m.events ?? []), msg] }));
           } else if (msg.type === "delta") {
             patchLast((m) => ({ ...m, content: m.content + msg.text }));
@@ -544,7 +329,10 @@ export default function Page() {
       if ((err as Error).name === "AbortError") {
         patchLast((m) => ({ ...m, finish: m.finish ?? "stopped" }));
       } else {
-        patchLast(() => ({ role: "error", content: (err as Error).message }));
+        patchLast(() => ({
+          role: "error",
+          content: (err as Error).message,
+        }));
       }
     } finally {
       abortRef.current = null;
@@ -553,379 +341,343 @@ export default function Page() {
     }
   }
 
-  const outcomeLabel: Record<AttemptEvent["outcome"], string> = {
-    ok: "served",
-    error: "failed",
-    retry: "retrying",
-    skipped_rate_limit: "rate-limited · skip",
-    skipped_budget: "over budget · skip",
-    circuit_open: "circuit open · skip",
-    unsupported: "unsupported",
-    capability_mismatch: "capability mismatch · skip",
-  };
+  async function rateLastReply(success: boolean) {
+    const last = [...messages]
+      .reverse()
+      .find((m) => m.role === "assistant" && m.stats?.routeId);
+    if (!last?.stats?.routeId) return;
+    await fetch("/api/outcome", {
+      method: "POST",
+      headers: { "content-type": "application/json" },
+      body: JSON.stringify({
+        routeId: last.stats.routeId,
+        ...(controls.task.trim() ? { task: controls.task.trim() } : {}),
+        success,
+        latencyMs: last.stats.totalMs,
+        ...(last.stats.costUsd !== undefined
+          ? { costUsd: last.stats.costUsd }
+          : {}),
+      }),
+    }).catch(() => {});
+    void refreshHealth();
+  }
 
-  const probeFor = (id: string) => testResults?.find((t) => t.id === id);
+  // ── render ──────────────────────────────────────────────────────────────
+
+  const primaryChainLabel =
+    routes.length > 0 ? routes.map((r) => r.id).join(" → ") : "chain empty";
 
   return (
-    <main className="shell">
-      <aside className="sidebar">
-        <div className="eyebrow">schematic</div>
-        <h1 className="wordmark">
-          ai-router <span>/ traffic console</span>
-        </h1>
-        <a className="docs-link" href={DOCS_URL}>
-          Read the docs ↗
-        </a>
-        <p className="sub">
-          One endpoint over every provider. Patch the fallback chain, then send
-          traffic — each retry, skip, and hand-off shows up in the timeline.
-        </p>
+    <div className="app">
+      <Header
+        strategy={strategy}
+        routeCount={routes.length}
+        healthOpen={healthOpen}
+        onToggleHealth={() => setHealthOpen((v) => !v)}
+        onStrategyChange={(next) => {
+          setStrategy(next);
+          void saveConfig({ routes: routes.map(stripToInput), ...(next ? {} : { strategy: undefined }) })
+            .then(() => refreshChain());
+        }}
+      />
 
-        <section className="panel">
-          <div className="eyebrow">fallback chain</div>
-
-          {routes.length === 0 ? (
-            <p className="empty-trace">No stops yet. Add the first one.</p>
-          ) : (
-            <div className="trace">
-              {routes.map((r, i) => {
-                const probe = probeFor(r.id);
-                return (
-                  <div
-                    key={r.id}
-                    className={`node${probe ? (probe.ok ? " probe-ok" : " probe-fail") : ""}`}
-                  >
-                    <div className="node-card">
-                      <div className="ci-head">
-                        <span className="ci-id">
-                          {i + 1}· {r.id}
-                        </span>
-                        <span className="ci-actions">
-                          <button
-                            className="icon"
-                            type="button"
-                            title={`Move ${r.id} up`}
-                            disabled={i === 0}
-                            onClick={() => void moveRoute(i, i - 1)}
-                          >
-                            ↑
-                          </button>
-                          <button
-                            className="icon"
-                            type="button"
-                            title={`Move ${r.id} down`}
-                            disabled={i === routes.length - 1}
-                            onClick={() => void moveRoute(i, i + 1)}
-                          >
-                            ↓
-                          </button>
-                          <button
-                            className="icon"
-                            type="button"
-                            title={`Edit ${r.id}`}
-                            onClick={() => startEdit(r)}
-                          >
-                            ✎
-                          </button>
-                          <button
-                            className="icon"
-                            type="button"
-                            title={`Duplicate ${r.id}`}
-                            onClick={() => void duplicateRoute(r)}
-                          >
-                            ⧉
-                          </button>
-                          <button
-                            className="icon"
-                            type="button"
-                            title={`Remove ${r.id}`}
-                            onClick={() => void removeRoute(r.id)}
-                          >
-                            ✕
-                          </button>
-                        </span>
-                      </div>
-                      <div className="ci-meta">
-                        {r.provider}/{r.model}
-                      </div>
-                      <div className="ci-meta dim">
-                        {[
-                          r.keys.length > 1 ? `${r.keys.length} keys` : r.keys[0],
-                          ...(r.limit?.rpm ? [`rpm ${r.limit.rpm}`] : []),
-                          ...(r.limit?.tpm ? [`tpm ${r.limit.tpm}`] : []),
-                        ]
-                          .filter(Boolean)
-                          .join(" · ") || "—"}
-                      </div>
-                      {probe && (
-                        <div className={`probe-line ${probe.ok ? "ok" : "fail"}`}>
-                          {probe.ok
-                            ? `probe ✓ ${probe.ms}ms`
-                            : `probe ✗ ${probe.ms}ms — ${probe.error ?? "failed"}`}
-                        </div>
-                      )}
-                    </div>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-
-          {draft === null ? (
-            <div className="panel-actions">
-              <button className="ghost" type="button" onClick={startAdd}>
-                + Add stop
-              </button>
-              <button
-                className="ghost"
-                type="button"
-                disabled={testing || routes.length === 0}
-                onClick={() => void testChain()}
-              >
-                {testing ? "Probing…" : "Probe chain"}
-              </button>
-            </div>
-          ) : (
-            <div className="draft">
-              <div className="eyebrow">
-                {editingId ? `editing "${editingId}"` : "new stop"}
-              </div>
-
-              <div className="route-row" style={{ marginTop: 10 }}>
-                <input
-                  className={`cell id${draftErrors?.id ? " invalid" : ""}`}
-                  placeholder="id"
-                  aria-invalid={draftErrors?.id ? true : undefined}
-                  value={draft.id}
-                  onChange={(e) => updateDraft({ id: e.target.value })}
-                />
-                <select
-                  className="cell"
-                  aria-label="Provider"
-                  value={draft.provider}
-                  onChange={(e) => updateDraft({ provider: e.target.value })}
-                >
-                  {PROVIDERS.map((p) => (
-                    <option key={p} value={p}>
-                      {p}
-                    </option>
-                  ))}
-                </select>
-                <input
-                  className={`cell model${draftErrors?.model ? " invalid" : ""}`}
-                  placeholder="model — e.g. gpt-4o-mini"
-                  aria-label="Model"
-                  aria-invalid={draftErrors?.model ? true : undefined}
-                  value={draft.model}
-                  onChange={(e) => updateDraft({ model: e.target.value })}
-                />
-                <input
-                  className={`cell key${draftErrors?.apiKey ? " invalid" : ""}`}
-                  placeholder={
-                    editingId ? "blank keeps the current key" : "api key"
-                  }
-                  aria-label="API key"
-                  aria-invalid={draftErrors?.apiKey ? true : undefined}
-                  type="password"
-                  value={draft.apiKey}
-                  onChange={(e) => updateDraft({ apiKey: e.target.value })}
-                />
-                <input
-                  className={`cell url${draftErrors?.baseUrl ? " invalid" : ""}`}
-                  placeholder="base url — openai-compatible only (presets fill it in)"
-                  aria-label="Base URL"
-                  aria-invalid={draftErrors?.baseUrl ? true : undefined}
-                  value={draft.baseUrl}
-                  onChange={(e) => updateDraft({ baseUrl: e.target.value })}
-                />
-                <input
-                  className={`cell rpm${draftErrors?.rpm ? " invalid" : ""}`}
-                  placeholder="rpm limit"
-                  aria-label="RPM limit (optional)"
-                  aria-invalid={draftErrors?.rpm ? true : undefined}
-                  value={draft.rpm}
-                  onChange={(e) =>
-                    updateDraft({ rpm: e.target.value.replace(/\D/g, "") })
-                  }
-                />
-                <input
-                  className={`cell${draftErrors?.tpm ? " invalid" : ""}`}
-                  placeholder="tpm limit"
-                  aria-label="TPM limit (optional)"
-                  aria-invalid={draftErrors?.tpm ? true : undefined}
-                  value={draft.tpm}
-                  onChange={(e) =>
-                    updateDraft({ tpm: e.target.value.replace(/\D/g, "") })
-                  }
-                />
-                <input
-                  className={`cell${draftErrors?.maxRetries ? " invalid" : ""}`}
-                  placeholder="max retries — default 2"
-                  inputMode="numeric"
-                  aria-label="Max retries (optional)"
-                  aria-invalid={draftErrors?.maxRetries ? true : undefined}
-                  value={draft.maxRetries}
-                  onChange={(e) => updateDraft({ maxRetries: e.target.value })}
-                />
-                <input
-                  className={`cell${draftErrors?.timeoutMs ? " invalid" : ""}`}
-                  placeholder="timeout ms — default 30000"
-                  inputMode="numeric"
-                  aria-label="Timeout in milliseconds (optional)"
-                  aria-invalid={draftErrors?.timeoutMs ? true : undefined}
-                  value={draft.timeoutMs}
-                  onChange={(e) => updateDraft({ timeoutMs: e.target.value })}
-                />
-              </div>
-
-              {draftErrors && (
-                <div role="alert">
-                  {Object.values(draftErrors).map((msg, i) => (
-                    <p key={i} className="config-err">
-                      {msg}
-                    </p>
-                  ))}
-                </div>
-              )}
-
-              <div className="panel-actions">
-                <button className="ghost" type="button" onClick={cancelDraft}>
-                  Cancel
-                </button>
-                <button className="button" type="button" onClick={() => void saveDraft()}>
-                  Save stop
-                </button>
-              </div>
-            </div>
-          )}
-
-          {configMsg && (
-            <p className={configMsg.ok ? "config-ok" : "config-err"}>
-              {configMsg.text}
-            </p>
-          )}
-
-          <p className="hint">
-            Keys stay in server memory for this session only. Probes send one
-            ~8-token completion per stop.
-          </p>
-        </section>
-      </aside>
-
-      <section className="chat">
-        <div className="traffic-head">
-          <span className="eyebrow">traffic</span>
-          <span className="eyebrow">
-            {routes.length > 0
-              ? `${routes.length} stop${routes.length === 1 ? "" : "s"} · ${
-                  routes.map((r) => r.id).join(" → ")
-                }`
-              : "chain empty"}
-          </span>
-        </div>
-
-        <div className="log" ref={logRef}>
-          {messages.length === 0 && (
-            <div style={{ margin: "auto", textAlign: "center" }}>
-              <p className="eyebrow" style={{ marginBottom: 8 }}>no traffic yet</p>
-              <p className="sub" style={{ margin: 0 }}>
-                Send a message to watch it move down the chain.
-              </p>
-            </div>
-          )}
-          {messages.map((m, i) => {
-            const isStreaming =
-              busy && i === messages.length - 1 && m.role === "assistant" && !m.finish;
-            return (
-              <div key={i} className={`msg-wrap ${m.role}`}>
-                {(m.events?.length ?? 0) > 0 && (
-                  <div className="timeline">
-                    {m.events!.map((e, j) => (
-                      <div key={j} className={`evt evt-${e.outcome}`}>
-                        <span className="evt-outcome">{outcomeLabel[e.outcome]}</span>
-                        <span className="evt-route">{e.routeId}</span>
-                        {e.attempts > 0 && (
-                          <span>try {e.attempts}</span>
-                        )}
-                        {e.keyIndex !== undefined && e.outcome !== "ok" && (
-                          <span>key#{e.keyIndex}</span>
-                        )}
-                        {e.kind && <span>{e.kind}</span>}
-                        {e.message && <span className="evt-msg">{e.message}</span>}
-                      </div>
-                    ))}
-                  </div>
-                )}
-                <div className={`msg ${m.role}`}>
-                  {m.role === "assistant" && m.content ? (
-                    <Formatted text={m.content} streaming={isStreaming} />
-                  ) : (
-                    m.content || (m.role === "assistant" ? "…" : "")
-                  )}
-                  {m.finish && <span className="finish">{m.finish}</span>}
-                </div>
-                {m.stats && m.role !== "error" && (
-                  <div className="stats">
-                    <b>{m.stats.ttftMs}ms</b> first token
-                    <span className="tick">·</span>
-                    <b>{m.stats.tokens}</b> tok
-                    <span className="tick">·</span>
-                    <b>{m.stats.tps}</b> tok/s
-                    <span className="tick">·</span>
-                    {(m.stats.totalMs / 1000).toFixed(1)}s
-                    {m.stats.provider && (
-                      <>
-                        <span className="tick">·</span>
-                        via{" "}
-                        <b>
-                          {m.stats.provider}
-                          {m.stats.model ? `/${m.stats.model}` : ""}
-                        </b>
-                      </>
-                    )}
-                  </div>
-                )}
-              </div>
-            );
-          })}
-        </div>
-
-        <form
-          className="form"
-          onSubmit={(e) => {
-            e.preventDefault();
-            void send();
+      <div className={`cols ${healthOpen ? "with-health" : ""}`}>
+        <ChainRail
+          routes={routes}
+          probes={probes}
+          probing={probing}
+          onAdd={() => {
+            setEditingId(null);
+            setDraft(emptyDraft());
           }}
-        >
-          <textarea
-            className="input"
-            rows={1}
-            value={input}
-            placeholder="Say something…"
-            onChange={(e) => setInput(e.target.value)}
-            onKeyDown={(e) => {
-              if (e.key === "Enter" && !e.shiftKey) {
-                e.preventDefault();
-                void send();
-              }
-            }}
+          onEdit={(r) => {
+            setEditingId(r.id);
+            setDraft(editDraftFrom(r));
+          }}
+          onDuplicate={(r) => void duplicateRoute(r)}
+          onRemove={(id) => void removeRoute(id)}
+          onMove={(from, to) => void moveRoute(from, to)}
+          onProbe={() => void testChain()}
+        />
+
+        <main className="traffic">
+          <div className="traffic-head">
+            <span className="eyebrow">traffic</span>
+            <span className="dim mono">{primaryChainLabel}</span>
+          </div>
+
+          <div className="log" ref={logRef}>
+            {messages.length === 0 && (
+              <div className="empty center">
+                <p className="empty-title">No traffic yet.</p>
+                <p className="empty-sub">
+                  Send a message to watch it walk the chain — the dry-run plan,
+                  every retry and skip, and the streamed answer appear here.
+                </p>
+              </div>
+            )}
+            {messages.map((m, i) => (
+              <MessageRow
+                key={i}
+                msg={m}
+                streaming={busy && i === messages.length - 1 && m.role === "assistant" && !m.finish}
+                canRate={
+                  !busy &&
+                  m.role === "assistant" &&
+                  m.finish === "stop" &&
+                  !!m.stats?.routeId
+                }
+                onRate={(s) => void rateLastReply(s)}
+              />
+            ))}
+          </div>
+
+          <Composer
+            input={input}
+            setInput={setInput}
+            controls={controls}
+            setControls={setControls}
+            busy={busy}
+            disabled={routes.length === 0}
+            onSubmit={() => void send()}
+            onStop={() => abortRef.current?.abort()}
           />
-          {busy && (
-            <button
-              className="ghost"
-              type="button"
-              onClick={() => abortRef.current?.abort()}
-            >
-              Stop
-            </button>
-          )}
-          <button className="button" type="submit" disabled={busy || !input.trim()}>
-            {busy ? "…" : "Send"}
+        </main>
+
+        <HealthRail
+          open={healthOpen}
+          stats={engineStats}
+          onClose={() => setHealthOpen(false)}
+        />
+      </div>
+
+      {configError && (
+        <div className="toast error" role="alert">
+          {configError}
+          <button type="button" className="icon" onClick={() => setConfigError(null)}>
+            ✕
           </button>
-        </form>
-      </section>
-    </main>
+        </div>
+      )}
+
+      <RouteEditorModal
+        draft={draft}
+        editingId={editingId}
+        routes={routes}
+        onClose={() => {
+          setDraft(null);
+          setEditingId(null);
+        }}
+        onSave={handleSave}
+      />
+    </div>
   );
+}
+
+// ── message rendering ─────────────────────────────────────────────────────
+
+function MessageRow({
+  msg,
+  streaming,
+  canRate,
+  onRate,
+}: {
+  msg: Msg;
+  streaming: boolean;
+  canRate: boolean;
+  onRate: (success: boolean) => void;
+}) {
+  if (msg.role === "user") {
+    return (
+      <div className="row user-row">
+        <div className="bubble user">{msg.content}</div>
+      </div>
+    );
+  }
+  return (
+    <div className={`row assistant-row ${msg.role === "error" ? "is-error" : ""}`}>
+      {msg.plan && <PlanCard plan={msg.plan} />}
+      {(msg.events?.length ?? 0) > 0 && <EventTimeline events={msg.events!} />}
+      <div className={`bubble assistant ${msg.role === "error" ? "error" : ""}`}>
+        {msg.content ? (
+          <Formatted text={msg.content} streaming={streaming} />
+        ) : (
+          <span className="dim">{msg.role === "error" ? "" : "…"}</span>
+        )}
+      </div>
+      {msg.stats && (
+        <div className="stat-strip mono">
+          <b>{msg.stats.ttftMs}ms</b> ttft
+          <i>·</i>
+          {msg.stats.tokens} tok
+          <i>·</i>
+          {msg.stats.tps} tok/s
+          <i>·</i>
+          {msg.stats.costUsd !== undefined && (
+            <>
+              ${msg.stats.costUsd.toExponential(2)}
+              <i>·</i>
+            </>
+          )}
+          via <b>{msg.stats.routeId ?? msg.stats.provider}{msg.stats.model ? `/${msg.stats.model}` : ""}</b>
+        </div>
+      )}
+      {canRate && (
+        <div className="rate-row">
+          <button className="chip-btn" title="good answer — feeds quality-first routing" onClick={() => onRate(true)}>
+            👍 good
+          </button>
+          <button className="chip-btn" title="bad answer — feeds quality-first routing" onClick={() => onRate(false)}>
+            👎 bad
+          </button>
+          <span className="dim">records an outcome for adaptive routing</span>
+        </div>
+      )}
+    </div>
+  );
+}
+
+function Composer({
+  input,
+  setInput,
+  controls,
+  setControls,
+  busy,
+  disabled,
+  onSubmit,
+  onStop,
+}: {
+  input: string;
+  setInput: (v: string) => void;
+  controls: CallControls;
+  setControls: (c: CallControls) => void;
+  busy: boolean;
+  disabled: boolean;
+  onSubmit: () => void;
+  onStop: () => void;
+}) {
+  return (
+    <div className="composer">
+      <details className="controls-pop">
+        <summary className="chip-btn">routing controls</summary>
+        <div className="controls-grid">
+          <label>
+            <span>task · quality-first bucket</span>
+            <input
+              value={controls.task}
+              placeholder="summarize"
+              onChange={(e) => setControls({ ...controls, task: e.target.value })}
+            />
+          </label>
+          <label>
+            <span>deadline ms · whole call</span>
+            <input
+              inputMode="numeric"
+              value={controls.deadlineMs}
+              placeholder="5000"
+              onChange={(e) =>
+                setControls({ ...controls, deadlineMs: e.target.value.replace(/\D/g, "") })
+              }
+            />
+          </label>
+          <label>
+            <span>max cost usd · estimate</span>
+            <input
+              inputMode="decimal"
+              value={controls.maxCostUsd}
+              placeholder="0.01"
+              onChange={(e) =>
+                setControls({ ...controls, maxCostUsd: e.target.value.replace(/[^\d.]/g, "") })
+              }
+            />
+          </label>
+          <label>
+            <span>max p50 ms · observed</span>
+            <input
+              inputMode="numeric"
+              value={controls.maxLatencyMs}
+              placeholder="1500"
+              onChange={(e) =>
+                setControls({ ...controls, maxLatencyMs: e.target.value.replace(/\D/g, "") })
+              }
+            />
+          </label>
+          <label className="cap-check">
+            <input
+              type="checkbox"
+              checked={controls.requireTools}
+              onChange={(e) =>
+                setControls({ ...controls, requireTools: e.target.checked })
+              }
+            />
+            require tools (hard constraint)
+          </label>
+        </div>
+      </details>
+
+      <form
+        className="composer-form"
+        onSubmit={(e) => {
+          e.preventDefault();
+          onSubmit();
+        }}
+      >
+        <textarea
+          rows={1}
+          value={input}
+          placeholder={disabled ? "Add a stop first…" : "Say something…"}
+          disabled={disabled}
+          onChange={(e) => setInput(e.target.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter" && !e.shiftKey) {
+              e.preventDefault();
+              onSubmit();
+            }
+          }}
+        />
+        {busy ? (
+          <button type="button" className="btn danger" onClick={onStop}>
+            stop
+          </button>
+        ) : (
+          <button type="submit" className="btn primary" disabled={disabled || !input.trim()}>
+            send
+          </button>
+        )}
+      </form>
+    </div>
+  );
+}
+
+// ── helpers ───────────────────────────────────────────────────────────────
+
+function editDraftFrom(r: ServerRoute): RouteDraft {
+  return {
+    id: r.id,
+    provider: r.provider,
+    model: r.model,
+    apiKey: "", // blank = keep stored key
+    baseUrl: r.baseUrl ?? "",
+    rpm: r.limit?.rpm ? String(r.limit.rpm) : "",
+    tpm: r.limit?.tpm ? String(r.limit.tpm) : "",
+    maxRetries: r.maxRetries !== undefined ? String(r.maxRetries) : "",
+    timeoutMs: r.timeoutMs !== undefined ? String(r.timeoutMs) : "",
+    weight: r.weight !== undefined ? String(r.weight) : "",
+    contextWindow:
+      r.capabilities?.contextWindow !== undefined
+        ? String(r.capabilities.contextWindow)
+        : "",
+    priceIn: "",
+    priceOut: "",
+    caps: {
+      tools: r.capabilities?.tools === true,
+      vision: r.capabilities?.vision === true,
+      structuredOutput: r.capabilities?.structuredOutput === true,
+      streaming: r.capabilities?.streaming !== false,
+      reasoning: r.capabilities?.reasoning === true,
+      embeddings: r.capabilities?.embeddings === true,
+    },
+  };
 }
 
 function stripToInput(r: ServerRoute): Record<string, unknown> {
@@ -933,8 +685,6 @@ function stripToInput(r: ServerRoute): Record<string, unknown> {
     id: r.id,
     provider: r.provider,
     model: r.model,
-    // keys masked client-side; reattach via _keepKeyOf so removals/reorders
-    // don't lose credentials
     _keepKeyOf: r.id,
     ...(r.baseUrl ? { baseUrl: r.baseUrl } : {}),
     ...(r.limit?.rpm || r.limit?.tpm
@@ -942,13 +692,7 @@ function stripToInput(r: ServerRoute): Record<string, unknown> {
       : {}),
     ...(r.maxRetries !== undefined ? { maxRetries: r.maxRetries } : {}),
     ...(r.timeoutMs !== undefined ? { timeoutMs: r.timeoutMs } : {}),
+    ...(r.weight !== undefined ? { weight: r.weight } : {}),
+    ...(r.capabilities ? { capabilities: r.capabilities } : {}),
   };
-}
-
-function replaceById(
-  routes: ServerRoute[],
-  id: string,
-  route: Record<string, unknown>,
-): Record<string, unknown>[] {
-  return routes.map((r) => (r.id === id ? route : stripToInput(r)));
 }

@@ -30,19 +30,26 @@ function parseMessages(input: unknown): ChatMessage[] | null {
 /**
  * POST /api/chat — NDJSON stream mixing routing events and text deltas:
  *
+ *   {"type":"plan","strategy":"cheapest","candidates":[...]}   ← dry-run decision
  *   {"type":"event","routeId":"openai","outcome":"error","kind":"server","attempts":2,...}
  *   {"type":"event","routeId":"anthropic","outcome":"ok","attempts":1,...}
  *   {"type":"delta","text":"Hel"}
  *   {"type":"done","finish":"stop"}
  *
- * Every fallback, retry, key rotation, and rate-limit skip is visible to the
- * client as it happens. All attempt events precede the first delta because
- * the engine commits before streaming starts.
+ * Every fallback, retry, key rotation, rate-limit skip, and capability skip
+ * is visible to the client as it happens. The plan frame is the engine's own
+ * dry-run explanation for THIS request. All attempt events precede the first
+ * delta because the engine commits before streaming starts.
  */
 export async function POST(req: Request) {
   const body = (await req.json().catch(() => null)) as {
     messages?: unknown;
     model?: unknown;
+    deadlineMs?: unknown;
+    task?: unknown;
+    maxCostUsd?: unknown;
+    maxLatencyMs?: unknown;
+    requireTools?: unknown;
   } | null;
   const messages = body === null ? null : parseMessages(body.messages);
   if (!messages) {
@@ -64,6 +71,30 @@ export async function POST(req: Request) {
     return Response.json({ error: (err as Error).message }, { status: 400 });
   }
 
+  // Per-call routing controls straight from the UI toolbar.
+  const task =
+    typeof body!.task === "string" && body!.task.trim()
+      ? body!.task.trim()
+      : undefined;
+  const maxCostUsd =
+    typeof body!.maxCostUsd === "number" && Number.isFinite(body!.maxCostUsd) && body!.maxCostUsd >= 0
+      ? body!.maxCostUsd
+      : undefined;
+  const maxLatencyMs =
+    typeof body!.maxLatencyMs === "number" && Number.isFinite(body!.maxLatencyMs) && body!.maxLatencyMs > 0
+      ? body!.maxLatencyMs
+      : undefined;
+  const deadlineMs =
+    typeof body!.deadlineMs === "number" && Number.isFinite(body!.deadlineMs) && body!.deadlineMs > 0
+      ? body!.deadlineMs
+      : undefined;
+  const routing = {
+    ...(task !== undefined || maxCostUsd !== undefined || maxLatencyMs !== undefined
+      ? { task, maxCostUsd, maxLatencyMs }
+      : {}),
+    ...(body!.requireTools === true ? { require: { tools: true as const } } : {}),
+  };
+
   const encoder = new TextEncoder();
   const output = new ReadableStream<Uint8Array>({
     async start(controller) {
@@ -74,7 +105,18 @@ export async function POST(req: Request) {
         controller.enqueue(encoder.encode(JSON.stringify(frame) + "\n"));
       };
       const started = Date.now();
+      let servedRouteId: string | undefined;
       try {
+        // Dry-run plan first: shows what WOULD happen before anything runs.
+        try {
+          send({
+            type: "plan",
+            ...(await router.explain({ model, messages }, { routing })),
+          });
+        } catch {
+          // explain is advisory; never block the real call on it
+        }
+
         // Wire client disconnect → abort signal.
         const stream = await router.stream(
           {
@@ -84,7 +126,12 @@ export async function POST(req: Request) {
           },
           {
             signal: req.signal,
-            onAttempt: (event) => send({ type: "event", ...event }),
+            ...(deadlineMs !== undefined ? { deadlineMs } : {}),
+            ...(Object.keys(routing).length > 0 ? { routing } : {}),
+            onAttempt: (event) => {
+              if (event.outcome === "ok") servedRouteId = event.routeId;
+              send({ type: "event", ...event });
+            },
           },
         );
         // Resolving the stream = commit = first token reached us (upstream
@@ -96,6 +143,7 @@ export async function POST(req: Request) {
         let tokensOut: number | null = null;
         let servedProvider: string | undefined;
         let servedModel: string | undefined;
+        let costUsd: number | undefined;
 
         for await (const chunk of stream) {
           if (!servedProvider && chunk.provider) {
@@ -107,19 +155,38 @@ export async function POST(req: Request) {
             send({ type: "delta", text: chunk.delta.content });
           }
           if (chunk.usage) tokensOut = chunk.usage.completion_tokens;
+          if (chunk.cost_usd !== undefined) costUsd = chunk.cost_usd;
           if (chunk.finish_reason) finish = chunk.finish_reason;
+        }
+
+        // Feed the adaptive-routing demo: every completed reply records a
+        // success outcome (quality comes from the user's thumbs via /api/outcome).
+        if (servedRouteId) {
+          try {
+            router.recordOutcome({
+              routeId: servedRouteId,
+              ...(task !== undefined ? { task } : {}),
+              success: true,
+              latencyMs: Date.now() - started,
+              ...(costUsd !== undefined ? { costUsd } : {}),
+            });
+          } catch {
+            // telemetry never breaks the response
+          }
         }
 
         const genMs = Math.max(1, Date.now() - commitAt);
         const tokens = tokensOut ?? Math.max(1, Math.round(chars / 4));
         send({
           type: "stats",
+          routeId: servedRouteId,
           provider: servedProvider,
           model: servedModel,
           ttftMs: commitAt - started,
           totalMs: Date.now() - started,
           tokens,
           tps: Math.round((tokens / genMs) * 1000),
+          ...(costUsd !== undefined ? { costUsd } : {}),
         });
         send({ type: "done", finish });
       } catch (err) {

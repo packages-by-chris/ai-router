@@ -24,7 +24,11 @@ errors aggregate into one `ConfigError`.
 | `routes` | `get routes(): string[]` | Route ids available as `model` values. |
 | `complete` | `(req: ChatRequest, opts?: CallOptions): Promise<ChatResponse>` | Walks the chain, returns a unified response. |
 | `stream` | `(req: ChatRequest, opts?: CallOptions): Promise<AsyncIterable<ChatChunk>>` | Committed stream — see [Streaming](/docs/streaming). |
+| `embed` | `(req: EmbeddingRequest, opts?: CallOptions): Promise<EmbeddingResponse>` | Embeddings with the same fallback machinery. |
 | `raw` | `(routeId: string, opts?: RawRequestOptions): Promise<Response>` | Escape hatch — see [Raw requests](/docs/raw-requests). |
+| `explain` | `(req: ChatRequest, opts?): Promise<RoutingExplanation>` | Dry-run decision: candidates, reasons, estimated cost — see [Dry-run](/docs/dry-run). |
+| `recordOutcome` | `(event: OutcomeEvent): void` | Record app-observed quality for adaptive routing. |
+| `stats` | `(): Promise<RouterStats>` | Circuit breakers, key cursors, health percentiles, outcomes. |
 
 `AIRouterOptions` extends `EngineOptions`:
 
@@ -36,6 +40,7 @@ errors aggregate into one `ConfigError`.
 | `rng?` | `Math.random` | Backoff jitter source. |
 | `middleware?` | — | Per-attempt lifecycle hooks ([Middleware](/docs/middleware)). |
 | `circuitBreaker?` | disabled | Skip route after N failures ([Circuit breaker](/docs/circuit-breaker)). |
+| `pricing?` | — | USD per 1M tokens by route/model id — enables cost routing ([Cost, latency & quality](/docs/routing-policies)). |
 
 ## CallOptions
 
@@ -45,6 +50,8 @@ interface CallOptions {
   onFinish?: (summary: CallSummaryEvent) => void;
   onLog?: (event: LogEvent) => void;
   signal?: AbortSignal;
+  deadlineMs?: number;        // whole-call wall-clock budget
+  routing?: RoutingOptions;   // per-call routing policy
 }
 ```
 
@@ -53,6 +60,22 @@ interface CallOptions {
 - `onLog` — structured lifecycle events; fires in addition to any
   engine-level hook — see [Observability](/docs/observability).
 - `signal` — caller-provided abort signal. Cancels in-flight requests when fired.
+- `deadlineMs` — wall-clock budget across retries/fallbacks; breach throws
+  `DeadlineExceededError` — see [Deadlines](/docs/deadlines).
+- `routing` — per-call policy knobs:
+
+```ts
+interface RoutingOptions {
+  require?: CapabilityRequirement; // hard capability constraints
+  task?: string;                   // quality-first bucket
+  maxCostUsd?: number;             // estimated-cost ceiling
+  maxLatencyMs?: number;           // observed-p50 ceiling
+  filter?: (route: RouteView) => boolean; // secret-free view
+}
+```
+
+See [Capability routing](/docs/capability-routing) and
+[Cost, latency & quality](/docs/routing-policies).
 
 ## Middleware
 
@@ -145,7 +168,8 @@ Shapes are documented page by page under [Core concepts](/docs/configuration).
 ## Errors
 
 `AIRouterError` (base), `ConfigError`, `UnsupportedProviderError`,
-`ProviderError`, `RateLimitedError`, `AllRoutesFailedError`, plus helpers
+`ProviderError`, `RateLimitedError`, `AllRoutesFailedError`,
+`DeadlineExceededError`, plus helpers
 `classifyStatus`, `isRetryableKind`, `isKeyRelatedKind`. Full taxonomy:
 [Errors](/docs/errors).
 

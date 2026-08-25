@@ -5,12 +5,13 @@ import {
   type LimitRule,
   type ModelRoute,
   type RouterConfig,
+  type RoutingStrategy,
 } from "@ai-router/core";
 
 /**
  * Router state for the demo.
  *
- * Routes are configurable from the frontend (POST/DELETE /api/config) and
+ * Routes are configurable from the frontend (POST /api/config) and
  * live only in server memory — keys posted from the browser are never
  * persisted or logged. Edits may omit the key (`_keepKeyOf`) to reuse the
  * stored one, so the UI never has to display or resend real keys.
@@ -22,14 +23,21 @@ import {
 interface RouterState {
   router: AIRouter;
   routes: ModelRoute[];
+  strategy?: RoutingStrategy;
+  /** Demo USD-per-1M-token prices keyed by route id (drives cost routing). */
+  pricing: Record<string, { input: number; output: number }>;
 }
 
 const g = globalThis as typeof globalThis & { __aiRouterState?: RouterState };
 
 /** Single source of truth for router options — used by every construction site. */
-function makeRouter(config: RouterConfig): AIRouter {
+function makeRouter(
+  config: RouterConfig,
+  pricing: Record<string, { input: number; output: number }>,
+): AIRouter {
   return new AIRouter(config, {
     circuitBreaker: { threshold: 5, cooldownMs: 30_000 },
+    pricing,
     middleware: {
       beforeRequest(ctx) {
         console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
@@ -43,7 +51,7 @@ function makeRouter(config: RouterConfig): AIRouter {
 
 function ensure(): RouterState {
   if (!g.__aiRouterState) {
-    g.__aiRouterState = { router: makeRouter({ routes: [] }), routes: [] };
+    g.__aiRouterState = { router: makeRouter({ routes: [] }, {}), routes: [], pricing: {} };
   }
   return g.__aiRouterState;
 }
@@ -103,18 +111,44 @@ function reattachStoredKeys(input: unknown): unknown {
 }
 
 export type SetConfigResult =
-  | { ok: true; routes: ModelRoute[] }
+  | { ok: true; routes: ModelRoute[]; strategy?: RoutingStrategy }
   | { ok: false; error: string };
 
-/** Validate + swap the live router. ConfigError text goes back to the UI. */
+/**
+ * Validate + swap the live router. ConfigError text goes back to the UI.
+ * Body may carry demo `pricing` ({ routeId: [usdPerMIn, usdPerMOut] }) for
+ * cost-aware routing; omitted pricing persists from the previous state.
+ */
 export function setConfig(input: unknown): SetConfigResult {
   try {
     const config = parseConfig(reattachStoredKeys(input));
-    g.__aiRouterState = {
-      router: makeRouter(config),
-      routes: config.routes,
+    const incoming = (input ?? {}) as {
+      pricing?: Record<string, [number, number]>;
     };
-    return { ok: true, routes: config.routes };
+    const prev = g.__aiRouterState?.pricing ?? {};
+    const source =
+      incoming.pricing !== undefined
+        ? incoming.pricing
+        : Object.fromEntries(
+            Object.entries(prev).map(([k, v]) => [k, [v.input, v.output] as [number, number]]),
+          );
+    const pricing: Record<string, { input: number; output: number }> = {};
+    for (const [routeId, pair] of Object.entries(source)) {
+      if (
+        Array.isArray(pair) &&
+        pair.length >= 2 &&
+        pair.every((n) => typeof n === "number" && Number.isFinite(n) && n >= 0)
+      ) {
+        pricing[routeId] = { input: pair[0]!, output: pair[1]! };
+      }
+    }
+    g.__aiRouterState = {
+      router: makeRouter(config, pricing),
+      routes: config.routes,
+      strategy: config.strategy,
+      pricing,
+    };
+    return { ok: true, routes: config.routes, strategy: config.strategy };
   } catch (err) {
     if (err instanceof ConfigError) return { ok: false, error: err.message };
     throw err;
@@ -149,6 +183,8 @@ export interface ServerRouteDTO {
   maxRetries?: number;
   timeoutMs?: number;
   limit?: LimitRule;
+  weight?: number;
+  capabilities?: ModelRoute["capabilities"];
   keys: string[];
 }
 
@@ -162,9 +198,25 @@ export function describeRoutes(): ServerRouteDTO[] {
     maxRetries: r.maxRetries,
     timeoutMs: r.timeoutMs,
     limit: r.limit,
+    weight: r.weight,
+    capabilities: r.capabilities,
     keys:
       r.apiKey !== undefined || r.apiKeys !== undefined
         ? [...(r.apiKey ? [mask(r.apiKey)] : []), ...(r.apiKeys ?? []).map(mask)]
         : [],
   }));
+}
+
+/** Current demo state summary (no credentials). */
+export function describeState(): {
+  routes: ServerRouteDTO[];
+  strategy?: RoutingStrategy;
+  pricing: Record<string, { input: number; output: number }>;
+} {
+  const state = ensure();
+  return {
+    routes: describeRoutes(),
+    ...(state.strategy !== undefined ? { strategy: state.strategy } : {}),
+    pricing: state.pricing,
+  };
 }

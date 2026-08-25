@@ -41,6 +41,29 @@ start, fallback order is preserved:
   latency EMA of observed successes (in-process). Unobserved routes are
   sampled before observed ones so every route gets data.
 
+Three more strategies use pricing and recorded outcomes — `cheapest`,
+`balanced`, and `quality-first` — covered in
+[Cost, latency & quality](/docs/routing-policies).
+
+## Pre-flight elimination
+
+Before any HTTP call, candidates can be removed from the walk entirely:
+
+- **Capabilities** — a declared profile that cannot serve this request
+  (tools/vision/json/context window/streaming/…) skips without an attempt.
+  See [Capability routing](/docs/capability-routing).
+- **Per-call constraints** — `routing.require`, `maxCostUsd`, `maxLatencyMs`,
+  and custom `filter`. Same page as above plus
+  [Cost, latency & quality](/docs/routing-policies).
+- **Key cooldowns** — keys whose last answer carried `Retry-After`
+  (rate_limit / auth / permission) are skipped on later calls until the
+  cooldown expires (capped at 5 min), logged as `key_skip` events instead of
+  burning attempts.
+
+These rejections surface as attempts with outcome `capability_mismatch`
+(capabilities/filters/constraints), `skipped_key_cooldown`-style `key_skip`
+log lines, and full reasons in [`explain()`](/docs/dry-run).
+
 ## Rate-limit and budget skip
 
 Before any HTTP call, the engine checks the route's rpm/tpm budget (see

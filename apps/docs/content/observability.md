@@ -45,7 +45,22 @@ type LogEvent =
       ts: number;
       routeId: string;
       provider: string;
-      reason: "rate_limit" | "budget" | "circuit_open" | "unsupported";
+      reason:
+        | "rate_limit"
+        | "budget"
+        | "circuit_open"
+        | "unsupported"
+        | "capability"   // capability/filter/constraint elimination
+        | "constraint"
+        | "filter";
+    }
+  | {
+      type: "key_skip";  // cooling keys passed over pre-attempt
+      ts: number;
+      routeId: string;
+      provider: string;
+      skipped: number;   // how many pool keys were on cooldown
+      keyIndex: number;  // the key actually selected
     }
   | {
       type: "attempt_retry";
@@ -71,7 +86,7 @@ Guarantees: callbacks are wrapped — a throwing logger never breaks routing.
 
 Fires for every route outcome: `"ok"`, `"error"`, `"retry"`,
 `"skipped_rate_limit"`, `"skipped_budget"`, `"circuit_open"`,
-`"unsupported"`:
+`"unsupported"`, `"capability_mismatch"`:
 
 ```ts
 await router.complete(req, {
@@ -111,6 +126,30 @@ for (const cb of stats.circuitBreakers) {
   if (cb.open) alert(`${cb.routeId} open for ${cb.openUntil - Date.now()}ms`);
 }
 ```
+
+### Health section
+
+`stats().health` carries everything observed at runtime, per route:
+
+```ts
+const h = stats.health.find((x) => x.routeId === "fast");
+h?.successes;        // total successful attempts
+h?.failures;         // total failed attempts
+h?.byKind;           // { rate_limit: 3, server: 1, … }
+h?.successRate;      // EMA in [0,1]
+h?.p50LatencyMs;     // latency percentiles (ring buffer of 128 samples)
+h?.p95LatencyMs;
+h?.p99LatencyMs;
+h?.p50TtfbMs;        // stream time-to-first-chunk percentiles
+h?.p95TtfbMs;
+h?.keys;             // per-key failure counts + cooldownRemainingMs
+```
+
+`stats().outcomes` lists recorded outcome EMAs per `(task, route)` —
+samples, successRate, avgQuality, avgLatencyMs, avgCostUsd. Both sections
+are in-process (per engine instance), like circuit breakers.
+
+Nothing on any stats surface contains credentials — asserted by tests.
 
 ## Wiring to external systems
 
