@@ -15,7 +15,8 @@ import type { ModelRoute, RouterConfig } from "./schema.js";
 const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
 /** Known fields at each config level; anything else is a typo and rejected. */
-const TOP_LEVEL_FIELDS: ReadonlySet<string> = new Set(["routes", "strategy"]);
+const TOP_LEVEL_FIELDS: ReadonlySet<string> = new Set(["routes", "strategy", "weights"]);
+const WEIGHT_FIELDS: ReadonlySet<string> = new Set(["cost", "speed", "reliability"]);
 const ROUTE_FIELDS: ReadonlySet<string> = new Set([
   "id",
   "provider",
@@ -126,6 +127,34 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
     errors.push(
       'config.strategy: must be "fallback", "round-robin", "weighted", "least-latency", "cheapest", "balanced", or "quality-first"',
     );
+  }
+
+  let weights: RouterConfig["weights"];
+  if (interpolated.weights !== undefined) {
+    if (!isObject(interpolated.weights)) {
+      errors.push("config.weights: expected an object");
+    } else {
+      for (const key of Object.keys(interpolated.weights)) {
+        if (!WEIGHT_FIELDS.has(key)) {
+          errors.push(`config.weights.${key}: unknown field (known: cost, speed, reliability)`);
+        }
+      }
+      const w: NonNullable<RouterConfig["weights"]> = {};
+      for (const key of WEIGHT_FIELDS) {
+        const value = interpolated.weights[key];
+        if (value === undefined) continue;
+        if (typeof value !== "number" || !(value > 0)) {
+          errors.push(`config.weights.${key}: must be a positive number`);
+          continue;
+        }
+        w[key as keyof NonNullable<RouterConfig["weights"]>] = value;
+      }
+      if (Object.keys(w).length === 0) {
+        errors.push("config.weights: expected at least one of cost, speed, reliability");
+      } else if (errors.length === 0) {
+        weights = w;
+      }
+    }
   }
 
   const seenIds = new Set<string>();
@@ -377,5 +406,6 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
   return {
     routes,
     ...(typeof strategy === "string" ? { strategy: strategy as RouterConfig["strategy"] } : {}),
+    ...(weights !== undefined ? { weights } : {}),
   };
 }

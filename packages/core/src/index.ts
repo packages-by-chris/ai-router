@@ -9,8 +9,10 @@ export type {
   CallSummaryEvent,
   CandidateExplanation,
   EngineOptions,
+  EvaluationContext,
   LogEvent,
   Middleware,
+  QualityEvaluator,
   RequestContext,
   RouteView,
   RoutingExplanation,
@@ -25,8 +27,7 @@ export type {
   ProviderId,
   RouterConfig,
   RoutingStrategy,
-} from "./config/schema.js";
-export { PROVIDER_IDS } from "./config/schema.js";
+} from "./config/schema.js";export { PROVIDER_IDS } from "./config/schema.js";
 export {
   AIRouterError,
   AllRoutesFailedError,
@@ -49,10 +50,26 @@ export type {
   ModelCapabilities,
   RouteOp,
 } from "./routing/capabilities.js";
-export { HealthTracker, KEY_COOLDOWN_CAP_MS } from "./routing/health.js";
-export type { KeyHealth, RouteHealthSnapshot } from "./routing/health.js";
-export type { OutcomeEvent, OutcomeStats } from "./routing/outcomes.js";
-export { estimateCostUsd } from "./routing/order.js";
+export { HealthTracker, KEY_COOLDOWN_CAP_MS, wilsonLowerBound } from "./routing/health.js";
+export type {
+  HealthTrackerOptions,
+  KeyHealth,
+  OpLatencyPercentiles,
+  RouteHealthSnapshot,
+  RouteOpStat,
+} from "./routing/health.js";
+export type { OutcomeEvent, OutcomeStats, OutcomeTrackerOptions } from "./routing/outcomes.js";
+export {
+  estimateCostUsd,
+  balancedScores,
+  orderByScore,
+  shrinkLatencies,
+} from "./routing/order.js";
+export type { PolicySignals, PolicyWeights, ScoreBreakdown } from "./routing/order.js";
+export { inferTask, DEFAULT_STATE_KEY } from "./routing/state.js";
+export type { RouterStateStore } from "./routing/state.js";
+export { replayStrategy } from "./routing/replay.js";
+export type { ReplayEvent, ReplayOptions, ReplayRequest, ReplayResult } from "./routing/replay.js";
 export {
   GuardrailBlockedError,
   runGuardrails,

@@ -123,4 +123,15 @@ export interface RouterConfig {
    *   Pair with CallOptions `routing.task` for task-aware selection.
    */
   strategy?: RoutingStrategy;
+  /**
+   * Relative term weights for the scored strategies ("balanced" and
+   * "quality-first"'s fallback ordering). Values are normalized to sum 1;
+   * defaults: cost 0.5, speed 0.3, reliability 0.2. Ignored by other
+   * strategies.
+   */
+  weights?: {
+    cost?: number;
+    speed?: number;
+    reliability?: number;
+  };
 }

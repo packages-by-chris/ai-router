@@ -44,16 +44,20 @@ import {
   type CapabilityRequirement,
   type RouteOp,
 } from "./routing/capabilities.js";
-import { HealthTracker, type RouteHealthSnapshot } from "./routing/health.js";
+import {
+  DEFAULT_HALF_LIFE_MS,
+  DEFAULT_SAMPLE_TTL_MS,
+  HealthTracker,
+  type RouteHealthSnapshot,
+} from "./routing/health.js";
 import { OutcomeTracker, type OutcomeEvent, type OutcomeStats } from "./routing/outcomes.js";
 export type { OutcomeEvent, OutcomeStats };
+import { DEFAULT_STATE_KEY, inferTask, type RouterStateStore } from "./routing/state.js";
 import {
-  balancedScores,
+  arrangeChain,
   estimateCostUsd,
-  orderByScore,
   priceLookup,
-  medianLatencyOf,
-  successRateOf,
+  type ScoreBreakdown,
 } from "./routing/order.js";
 import type {
   ChatChunk,
@@ -152,8 +156,7 @@ export type LogEvent =
       /** Index of the key actually selected. */
       keyIndex: number;
     }
-  | {
-      type: "attempt_retry";
+  | { type: "attempt_retry";
       ts: number;
       routeId: string;
       provider: string;
@@ -162,7 +165,16 @@ export type LogEvent =
       /** Backoff delay about to be slept before the next try. */
       delayMs?: number;
     }
-  | { type: "guardrail_block"; ts: number; phase: "input" | "output"; guardrail: string; reason?: string };
+  | { type: "guardrail_block"; ts: number; phase: "input" | "output"; guardrail: string; reason?: string }
+  | {
+      type: "explore";
+      ts: number;
+      strategy: RoutingStrategy;
+      /** Route promoted to the front for this request (forced probe). */
+      promotedRouteId: string;
+      /** Route it displaced from the front. */
+      replacedRouteId: string;
+    };
 
 /** Per-call options (second argument of complete/stream/embed). */
 export interface CallOptions {
@@ -220,6 +232,11 @@ export interface CandidateExplanation {
   observedTtfbMs?: number;
   /** Composite policy score in [0,1] (balanced/quality-first only). */
   score?: number;
+  /**
+   * Weighted term contributions behind `score` (balanced/quality-first):
+   * cost/speed/reliability ranks times configured weights.
+   */
+  scoreBreakdown?: ScoreBreakdown;
 }
 
 /** Dry-run routing decision: everything short of an HTTP request. */
@@ -280,9 +297,67 @@ export interface Middleware {
 type Notify = (event: AttemptEvent) => void;
 const noopNotify: Notify = () => {};
 
+/** Per-attempt timing out-param shared between the *Once ops and the retry loop. */
+type AttemptTiming = { latencyMs: number };
+
+/** Context handed to registered quality evaluators after a complete() call. */
+export interface EvaluationContext {
+  request: ChatRequest;
+  response: ChatResponse;
+  /** Resolved task bucket (`routing.task`, inferred under autoTask, or undefined). */
+  task?: string;
+}
+
+/**
+ * Pluggable quality evaluation: the router invokes these after a successful
+ * complete() and feeds the returned [0,1] score into outcome memory
+ * (quality-first routing). Multiple evaluators average. Throw to abstain —
+ * evaluator failures are swallowed and never break routing.
+ */
+export interface QualityEvaluator {
+  name: string;
+  evaluate(ctx: EvaluationContext): Promise<number | undefined> | number | undefined;
+}
+
 export interface EngineOptions {
   /** Rate-limit storage. Default: in-process sliding window. */
   store?: RateLimitStore;
+  /**
+   * Learned-state persistence (health stats, outcome memory, circuit
+   * breakers). Snapshots load at startup and flush debounced after
+   * mutations; last-writer-wins per snapshot key. Default: none — all
+   * learning stays in-process and dies with the engine instance.
+   */
+  stateStore?: RouterStateStore;
+  /**
+   * Staleness controls for learned signals.
+   * halfLifeMs: success/failure evidence and quality EMAs decay toward
+   * neutral with this half-life of silence (default 30 min; 0 disables).
+   * sampleTtlMs: latency samples older than this stop counting toward
+   * percentiles/least-latency ordering (default 10 min; 0 keeps forever).
+   */
+  decay?: { halfLifeMs?: number; sampleTtlMs?: number };
+  /**
+   * Exploration for adaptive strategies (least-latency/cheapest/balanced/
+   * quality-first): periodically promote a non-primary candidate so losers
+   * keep getting sampled and rankings can recover. epsilon = per-request
+   * probability (default 0); interval = force every Nth request (default
+   * 0). Both zero disables exploration (deterministic routing).
+   */
+  explore?: { epsilon?: number; interval?: number };
+  /** EMA smoothing for latency-independent trackers (outcomes). Default 0.3. */
+  emaAlpha?: number;
+  /**
+   * Quality evaluators run after successful complete() calls; scores feed
+   * outcome memory automatically (see QualityEvaluator).
+   */
+  evaluators?: QualityEvaluator[];
+  /**
+   * Infer the quality-first task bucket from request shape when the caller
+   * does not set `routing.task` (tools → "tool-use", images → "vision",
+   * structured output → "structured", ...). Default false.
+   */
+  autoTask?: boolean;
   /** HTTP client. Default: global fetch. Inject a mock in tests. */
   fetchImpl?: FetchLike;
   /** Backoff sleep. Tests inject a no-op. */
@@ -343,7 +418,11 @@ export interface RouterStats {
     opens: number;
   }>;
   keyCursors: Record<string, number>;
-  /** Per-route latency EMA in ms (strategy "least-latency" ordering signal). */
+  /**
+   * Per-route recent median latency in ms across operations (recency-bounded
+   * samples; drives "least-latency" ordering together with per-op views in
+   * `health`). Routes without fresh samples are omitted.
+   */
   latencies: Record<string, number>;
   /** Per-key limiter totals, when the store supports snapshots. */
   rateLimits: Record<string, number> | null;
@@ -370,14 +449,24 @@ export class RoutingEngine {
   private readonly cbState = new Map<string, { failures: number; openUntil: number; opens: number }>();
   /** Round-robin cursor so successive requests start on different keys. */
   private readonly keyCursor = new Map<string, number>();
-  /** Latency EMA per route id, ms (strategy "least-latency" ordering). */
-  private readonly latencyEma = new Map<string, number>();
   /** Round-robin chain rotation counter (strategy: "round-robin"). */
   private rrCounter = 0;
-  /** Observed per-route/per-key health (percentiles, tallies, cooldowns). */
-  private readonly health = new HealthTracker();
+  /** Observed per-route/per-op health (fresh percentiles, decayed tallies, cooldowns). */
+  readonly health: HealthTracker;
   /** Application-recorded outcome memory for quality-aware routing. */
-  private readonly outcomes = new OutcomeTracker();
+  readonly outcomes: OutcomeTracker;
+  // -- exploration --
+  private readonly exploreEpsilon: number;
+  private readonly exploreInterval: number;
+  private exploreCount = 0;
+  // -- learned-state persistence --
+  private readonly stateStore?: RouterStateStore;
+  private stateDirty = false;
+  private flushTimer?: ReturnType<typeof setTimeout>;
+  private flushChain: Promise<void> = Promise.resolve();
+  // -- quality evaluation / workload inference --
+  private readonly evaluators?: QualityEvaluator[];
+  private readonly autoTask: boolean;
 
   constructor(readonly config: RouterConfig, opts: EngineOptions = {}) {
     this.store = opts.store ?? new MemoryStore();
@@ -393,6 +482,105 @@ export class RoutingEngine {
     this.responseCache = opts.responseCache;
     this.guardrails = opts.guardrails;
     this.onLog = opts.onLog;
+    const halfLife = opts.decay?.halfLifeMs ?? DEFAULT_HALF_LIFE_MS;
+    const sampleTtl = opts.decay?.sampleTtlMs ?? DEFAULT_SAMPLE_TTL_MS;
+    this.health = new HealthTracker({ halfLifeMs: halfLife, sampleTtlMs: sampleTtl });
+    this.outcomes = new OutcomeTracker({
+      alpha: opts.emaAlpha ?? 0.3,
+      halfLifeMs: halfLife,
+    });
+    this.exploreEpsilon = Math.max(0, Math.min(1, opts.explore?.epsilon ?? 0));
+    this.exploreInterval = Math.max(0, opts.explore?.interval ?? 0);
+    this.stateStore = opts.stateStore;
+    this.evaluators = opts.evaluators;
+    this.autoTask = opts.autoTask ?? false;
+    if (this.stateStore) {
+      this.readyPromise = this.hydrateState();
+      void this.readyPromise;
+    }
+  }
+
+  private readyPromise?: Promise<void>;
+
+  /**
+   * Resolves once startup state hydration (stateStore load) settled.
+   * Awaiting this makes cross-restart state deterministic in tests/tools.
+   */
+  ready(): Promise<void> {
+    return this.readyPromise ?? Promise.resolve();
+  }
+
+  // ------------------------------------------------------- state persistence
+
+  /**
+   * Load a previously flushed snapshot (health, outcomes, circuit breakers).
+   * Fire-and-forget at construction; corrupt/missing data is ignored.
+   */
+  private async hydrateState(): Promise<void> {
+    if (!this.stateStore) return;
+    try {
+      const raw = await this.stateStore.get(DEFAULT_STATE_KEY);
+      if (!raw) return;
+      const parsed = JSON.parse(raw) as {
+        savedAt?: number;
+        health?: unknown;
+        outcomes?: unknown;
+        cb?: Array<[string, { failures: number; openUntil: number; opens: number }]>;
+      };
+      this.health.load(parsed.health);
+      this.outcomes.load(parsed.outcomes);
+      if (Array.isArray(parsed.cb)) {
+        for (const [routeId, s] of parsed.cb) {
+          if (typeof routeId === "string" && s && typeof s === "object") {
+            this.cbState.set(routeId, {
+              failures: Number(s.failures) || 0,
+              openUntil: Number(s.openUntil) || 0,
+              opens: Number(s.opens) || 0,
+            });
+          }
+        }
+      }
+    } catch {
+      // Corrupt or unreadable state must never break routing — start fresh.
+    }
+  }
+
+  /** Mark learned state dirty and schedule a debounced flush. */
+  private markStateDirty(): void {
+    if (!this.stateStore || this.stateDirty) return;
+    this.stateDirty = true;
+    this.flushTimer = setTimeout(() => {
+      this.flushTimer = undefined;
+      void this.flushState();
+    }, 1_500);
+  }
+
+  /**
+   * Serialize and persist learned state now (also called by the debounced
+   * flush). Resolves when the write settles; failures are swallowed.
+   */
+  async flushState(): Promise<void> {
+    if (!this.stateStore) return;
+    if (this.flushTimer !== undefined) {
+      clearTimeout(this.flushTimer);
+      this.flushTimer = undefined;
+    }
+    this.stateDirty = false;
+    const payload = JSON.stringify({
+      savedAt: Date.now(),
+      health: this.health.serialize(),
+      outcomes: this.outcomes.serialize(),
+      cb: [...this.cbState.entries()],
+    });
+    const write = (async () => {
+      try {
+        await this.stateStore!.set(DEFAULT_STATE_KEY, payload, 24 * 60 * 60_000);
+      } catch {
+        // Persistence loss degrades to in-process learning; never throw.
+      }
+    })();
+    this.flushChain = this.flushChain.then(() => write).catch(() => {});
+    await write;
   }
 
   /**
@@ -508,7 +696,7 @@ export class RoutingEngine {
       }
       let served: { route: NormalizedRoute; value: ChatResponse; tries: number } | undefined;
 
-      for (const route of this.resolveChain(req, "complete", routing?.task)) {
+      for (const route of this.resolveChain(req, "complete", routing, false, opts.onLog).chain) {
         if (signal?.aborted) throw abortFrom(signal);
         this.assertDeadline(deadlineAt, deadlineMs);
         if (this.cbIsOpen(route.id)) {
@@ -541,14 +729,14 @@ export class RoutingEngine {
           continue;
         }
 
-        const timing = { latencyMs: 0 };
+        const timing: AttemptTiming = { latencyMs: 0 };
         const result = await this.attemptWithRetry(
           route, notify, signal,
           (key, tries, keyIndex) =>
             this.completeOnce(adapter, route, key, tries, keyIndex, req, signal, notify, timing,
               deadlineAt),
           deadlineAt, deadlineMs,
-          opts.onLog,
+          { onLog: opts.onLog, op: "complete", timing },
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -596,6 +784,21 @@ export class RoutingEngine {
         }
         throw err;
       }
+      // Actual-cost feedback: correct future estimates by the route's
+      // observed actual / PRE-FLIGHT-estimate ratio (the pre-flight
+      // estimator assumes output ≈ input tokens when max_tokens is unset,
+      // so chatty routes systematically run under-priced).
+      if (price && usage && value.cost_usd !== undefined) {
+        const est = estimateCostUsd(price, inputTokens, req.max_tokens);
+        if (est > 0) {
+          this.health.recordCostRatio(route.id, value.cost_usd / est);
+          this.markStateDirty();
+        }
+      }
+      // Quality evaluators: application/harness scores feed outcome memory
+      // automatically. Failures and abstentions are swallowed.
+      const task = this.resolveTask(routing, req, inputTokens);
+      await this.runEvaluators(route.id, req, value, task);
       if (this.responseCache) {
         const key = responseCacheKey(req);
         void Promise.resolve(this.responseCache.set(key, JSON.stringify(value), this.responseCache.ttlMs)).catch(() => {});
@@ -656,7 +859,7 @@ export class RoutingEngine {
         }
         throw err;
       }
-      for (const route of this.resolveChain(req, "stream", routing?.task)) {
+      for (const route of this.resolveChain(req, "stream", routing, false, opts.onLog).chain) {
         if (signal?.aborted) throw abortFrom(signal);
         this.assertDeadline(deadlineAt, deadlineMs);
         if (this.cbIsOpen(route.id)) {
@@ -689,14 +892,14 @@ export class RoutingEngine {
           continue;
         }
 
-        const timing = { latencyMs: 0 };
+        const timing: AttemptTiming = { latencyMs: 0 };
         const result = await this.attemptWithRetry(
           route, notify, signal,
           (key, tries, keyIndex) =>
             this.streamCommit(adapter, route, key, tries, keyIndex, req, signal, notify, timing,
               deadlineAt),
           deadlineAt, deadlineMs,
-          opts.onLog,
+          { onLog: opts.onLog, op: "stream", timing },
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -707,6 +910,8 @@ export class RoutingEngine {
             ttfbMs: timing.latencyMs,
             attempts: totalTries(attempts, result.tries),
             onFinish,
+            inputTokens,
+            maxTokens: req.max_tokens,
           });
         }
         this.cbRecordFailure(route.id);
@@ -776,7 +981,7 @@ export class RoutingEngine {
       }
       let served: { route: NormalizedRoute; value: EmbeddingResponse; tries: number } | undefined;
 
-      for (const route of this.resolveChain(probe, "embed", routing?.task)) {
+      for (const route of this.resolveChain(probe, "embed", routing, false, opts.onLog).chain) {
         if (signal?.aborted) throw abortFrom(signal);
         this.assertDeadline(deadlineAt, deadlineMs);
         if (this.cbIsOpen(route.id)) {
@@ -811,9 +1016,11 @@ export class RoutingEngine {
           continue;
         }
 
+        const embedTiming: AttemptTiming = { latencyMs: 0 };
         const result = await this.attemptWithRetry(route, notify, signal, (key, tries, keyIndex) =>
-          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify, deadlineAt),
-          deadlineAt, deadlineMs, opts.onLog,
+          this.embedOnce(adapter, route, key, tries, keyIndex, req, signal, notify, deadlineAt, embedTiming),
+          deadlineAt, deadlineMs,
+          { onLog: opts.onLog, op: "complete", timing: embedTiming },
         );
         if (result.ok) {
           this.cbRecordSuccess(route.id);
@@ -901,7 +1108,12 @@ export class RoutingEngine {
         opens: s.opens,
       })),
       keyCursors: Object.fromEntries(this.keyCursor),
-      latencies: Object.fromEntries(this.latencyEma),
+      latencies: Object.fromEntries(
+        this.health
+          .snapshot()
+          .filter((h) => h.p50LatencyMs !== undefined)
+          .map((h) => [h.routeId, h.p50LatencyMs!]),
+      ),
       rateLimits,
       health: this.health.snapshot(),
       outcomes: this.outcomes.snapshot(),
@@ -917,27 +1129,34 @@ export class RoutingEngine {
   recordOutcome(event: OutcomeEvent): void {
     if (!this.config.routes.some((r) => r.id === event.routeId)) return;
     this.outcomes.record(event);
+    this.markStateDirty();
   }
 
   /**
    * Dry-run routing: evaluate the full candidate pipeline (strategy order,
    * capability gate, filter, constraints, circuit state, budgets) WITHOUT
-   * executing anything and WITHOUT consuming rate-limit quota. The first
-   * candidate that passes every read-only check is "selected"; note the
-   * real call may still differ if rpm limits trip or providers fail.
+   * executing anything and WITHOUT consuming rate-limit quota or exploration
+   * counters. The first candidate that passes every read-only check is
+   * "selected"; note the real call may still differ if rpm limits trip or
+   * providers fail. Scored strategies additionally attach each candidate's
+   * composite score and per-term breakdown.
    */
   async explain(req: ChatRequest, opts: Pick<CallOptions, "routing"> = {}): Promise<RoutingExplanation> {
     const strategy = this.config.strategy ?? "fallback";
-    const task = opts.routing?.task;
-    const chain = this.resolveChain(req, "complete", task);
     const inputTokens = estimateTokens(req);
+    const task = this.resolveTask(opts.routing, req, inputTokens);
+    const { chain, breakdowns } = this.resolveChain(req, "complete", opts.routing, true);
     const candidates: CandidateExplanation[] = [];
     let selected: CandidateExplanation | undefined;
+    const scored = strategy === "balanced" || strategy === "quality-first";
 
+    let i = -1;
     for (const route of chain) {
+      i++;
       const price = priceLookup(this.pricing, route.id, route.model);
       const estCost = price ? estimateCostUsd(price, inputTokens, req.max_tokens) : undefined;
       const healthSnap = this.health.snapshot().find((h) => h.routeId === route.id);
+      const bd = scored ? breakdowns?.[i] : undefined;
       const entry: CandidateExplanation = {
         routeId: route.id,
         provider: route.provider,
@@ -947,6 +1166,7 @@ export class RoutingEngine {
         ...(estCost !== undefined ? { estimatedCostUsd: estCost } : {}),
         ...(healthSnap?.p50LatencyMs !== undefined ? { observedLatencyMs: healthSnap.p50LatencyMs } : {}),
         ...(healthSnap?.p50TtfbMs !== undefined ? { observedTtfbMs: healthSnap.p50TtfbMs } : {}),
+        ...(bd ? { score: bd.total, scoreBreakdown: bd } : {}),
       };
       candidates.push(entry);
 
@@ -1006,6 +1226,11 @@ export class RoutingEngine {
       }
       if (healthSnap?.p50LatencyMs !== undefined) {
         entry.reasons.push(`observed p50 ${healthSnap.p50LatencyMs}ms`);
+      }
+      if (bd) {
+        entry.reasons.push(
+          `score ${bd.total} (cost ${bd.cost} + speed ${bd.speed} + reliability ${bd.reliability})`,
+        );
       }
       if (entry.reasons.length === 0) entry.reasons.push("highest-priority eligible candidate");
       selected = entry;
@@ -1140,15 +1365,15 @@ export class RoutingEngine {
     req: ChatRequest,
     signal: AbortSignal | undefined,
     notify: Notify,
-    timing: { latencyMs: number },
+    timing: AttemptTiming,
     deadlineAt: number | undefined,
   ): Promise<ChatResponse> {
     await this.fireBeforeRequest(route, req, tries);
     // Clamp the attempt to whatever budget remains; a shared controller also
     // keeps caller cancellation live for the whole body read.
     const link = this.linkAttempt(signal, deadlineAt);
+    const t0 = Date.now();
     try {
-      const t0 = Date.now();
       const value = await adapter.complete(
         { ...route, timeoutMs: this.effectiveTimeoutMs(route, deadlineAt) },
         key,
@@ -1156,14 +1381,21 @@ export class RoutingEngine {
         { fetchImpl: this.fetchImpl, signal: link.signal },
       );
       timing.latencyMs = Date.now() - t0;
-      this.recordLatency(route.id, timing.latencyMs);
-      this.health.recordSuccess(route.id, { latencyMs: timing.latencyMs });
+      // Success latency feeds the route's recency-bounded per-op samples.
+      this.health.recordSuccess(route.id, { op: "complete", latencyMs: timing.latencyMs });
+      this.markStateDirty();
       await this.fireAfterResponse(route, req, tries, value);
       notify({
         routeId: route.id, provider: route.provider, model: route.model,
         outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
       });
       return value;
+    } catch (err) {
+      // Elapsed time of the FAILED attempt is latency evidence for the
+      // retry loop's recordFailure (kind-gated there: only timeout/network
+      // enter the speed metric — a fast 500 must not look fast).
+      if (!signal?.aborted) timing.latencyMs = Date.now() - t0;
+      throw err;
     } finally {
       link.dispose();
     }
@@ -1187,6 +1419,7 @@ export class RoutingEngine {
     // Ownership transfers to the disposing wrapper below.
     const link = this.linkAttempt(signal, deadlineAt);
     let iterator: AsyncIterator<ChatChunk> | undefined;
+    const t0 = Date.now();
     try {
       const iterable = await adapter.stream(
         { ...route, timeoutMs: this.effectiveTimeoutMs(route, deadlineAt) },
@@ -1195,22 +1428,21 @@ export class RoutingEngine {
         { fetchImpl: this.fetchImpl, signal: link.signal },
       );
       iterator = iterable[Symbol.asyncIterator]();
-      const t0 = Date.now();
       const first = route.streamIdleTimeoutMs
         ? await this.nextWithTimeout(iterator, route.streamIdleTimeoutMs, route.provider)
         : await iterator.next();
       timing.latencyMs = Date.now() - t0;
       if (first.done) {
-        this.recordLatency(route.id, timing.latencyMs);
-        this.health.recordSuccess(route.id, { latencyMs: timing.latencyMs });
+        this.health.recordSuccess(route.id, { op: "stream", latencyMs: timing.latencyMs });
+        this.markStateDirty();
         notify({
           routeId: route.id, provider: route.provider, model: route.model,
           outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
         });
         return { iterator: disposeOnEnd(iterator, link.dispose), first: emptyChunk() };
       }
-      this.recordLatency(route.id, timing.latencyMs);
-      this.health.recordSuccess(route.id, { ttfbMs: timing.latencyMs });
+      this.health.recordSuccess(route.id, { op: "stream", ttfbMs: timing.latencyMs });
+      this.markStateDirty();
       notify({
         routeId: route.id, provider: route.provider, model: route.model,
         outcome: "ok", attempts: tries, keyIndex, latencyMs: timing.latencyMs,
@@ -1227,8 +1459,10 @@ export class RoutingEngine {
       return { iterator: disposeOnEnd(iterator, link.dispose), first: first.value };
     } catch (err) {
       // Pre-commit failure (or first-chunk timeout): tear everything down —
-      // the engine may fall back to another route.
+      // the engine may fall back to another route. Elapsed time is TTFB-
+      // scale evidence for the retry loop's kind-gated recordFailure.
       if (iterator) void Promise.resolve(iterator.return?.()).catch(() => {});
+      if (!signal?.aborted) timing.latencyMs = Date.now() - t0;
       link.dispose();
       throw err;
     }
@@ -1244,9 +1478,11 @@ export class RoutingEngine {
     signal: AbortSignal | undefined,
     notify: Notify,
     deadlineAt: number | undefined,
+    timing?: AttemptTiming,
   ): Promise<EmbeddingResponse> {
     await this.fireBeforeRequest(route, { model: req.model, messages: [] }, tries);
     const link = this.linkAttempt(signal, deadlineAt);
+    const t0 = Date.now();
     try {
       const value = await adapter.embed!(
         { ...route, timeoutMs: this.effectiveTimeoutMs(route, deadlineAt) },
@@ -1254,11 +1490,15 @@ export class RoutingEngine {
         req,
         { fetchImpl: this.fetchImpl, signal: link.signal },
       );
+      if (timing) timing.latencyMs = Date.now() - t0;
       notify({
         routeId: route.id, provider: route.provider, model: route.model,
         outcome: "ok", attempts: tries, keyIndex,
       });
       return value;
+    } catch (err) {
+      if (timing && !signal?.aborted) timing.latencyMs = Date.now() - t0;
+      throw err;
     } finally {
       link.dispose();
     }
@@ -1284,7 +1524,7 @@ export class RoutingEngine {
     op: (key: string, tries: number, keyIndex: number) => Promise<T>,
     deadlineAt?: number,
     deadlineMs?: number,
-    callOnLog?: (event: LogEvent) => void,
+    ctx: { onLog?: (event: LogEvent) => void; op?: "complete" | "stream"; timing?: AttemptTiming } = {},
   ): Promise<{ ok: true; value: T; tries: number } | { ok: false; attempt: AttemptRecord }> {
     const maxRetries = route.maxRetries;
     const poolSize = route.keyPool.length;
@@ -1303,7 +1543,7 @@ export class RoutingEngine {
       const picked = this.health.pickKey(route.id, effectiveIndex, poolSize);
       if (picked !== null && picked !== effectiveIndex) {
         const skipped = (picked - effectiveIndex + poolSize) % poolSize;
-        this.emitLog(callOnLog, {
+        this.emitLog(ctx.onLog, {
           type: "key_skip",
           ts: Date.now(),
           routeId: route.id,
@@ -1324,7 +1564,10 @@ export class RoutingEngine {
         this.health.recordFailure(route.id, last.kind, {
           keyIndex: effectiveIndex,
           ...(last.retryAfterMs !== undefined ? { retryAfterMs: last.retryAfterMs } : {}),
+          ...(ctx.timing && ctx.timing.latencyMs > 0 ? { latencyMs: ctx.timing.latencyMs } : {}),
+          ...(ctx.op !== undefined ? { op: ctx.op } : {}),
         });
+        this.markStateDirty();
         // Rate limit / auth / permission: try the next key immediately.
         // If all keys exhausted (or only one key), fall back to next route.
         if (isKeyRelatedKind(last.kind)) {
@@ -1352,7 +1595,7 @@ export class RoutingEngine {
           if (deadlineAt !== undefined) {
             delayMs = Math.max(0, Math.min(delayMs, deadlineAt - Date.now()));
           }
-          this.emitLog(callOnLog, {
+          this.emitLog(ctx.onLog, {
             type: "attempt_retry",
             ts: Date.now(),
             routeId: route.id,
@@ -1388,6 +1631,9 @@ export class RoutingEngine {
       ttfbMs: number;
       attempts: number;
       onFinish?: (s: CallSummaryEvent) => void;
+      /** For actual-cost ratio feedback. */
+      inputTokens?: number;
+      maxTokens?: number;
     },
   ): AsyncGenerator<ChatChunk> {
     let usage: Usage | undefined;
@@ -1421,6 +1667,15 @@ export class RoutingEngine {
         if (chunk.usage) usage = chunk.usage;
         if (chunk.cost_usd !== undefined) costUsd = chunk.cost_usd;
         yield chunk;
+      }
+      // Actual-cost feedback for streams, same as complete().
+      const price2 = this.priceFor(route);
+      if (price2 && usage && costUsd !== undefined && summary.inputTokens !== undefined) {
+        const est = estimateCostUsd(price2, summary.inputTokens, summary.maxTokens);
+        if (est > 0) {
+          this.health.recordCostRatio(route.id, costUsd / est);
+          this.markStateDirty();
+        }
       }
       summary.onFinish?.({
         outcome: "ok",
@@ -1472,9 +1727,18 @@ export class RoutingEngine {
    * Candidate slice for a request: routes from the requested id onward,
    * reordered by the configured strategy. Ordering never removes candidates
    * (elimination happens in the per-route gates); it only decides where the
-   * chain starts / how it is ranked.
+   * chain starts / how it is ranked. Delegates to the pure `arrangeChain`
+   * (shared with the offline replay harness), then optionally applies
+   * exploration (forced probe of a non-primary candidate) for adaptive
+   * strategies. Dry-runs skip exploration — no side effects, no rng draws.
    */
-  private resolveChain(req: ChatRequest, op: RouteOp, task?: string): NormalizedRoute[] {
+  private resolveChain(
+    req: ChatRequest,
+    op: RouteOp,
+    routing: RoutingOptions | undefined,
+    forExplain = false,
+    callOnLog?: (event: LogEvent) => void,
+  ): { chain: NormalizedRoute[]; breakdowns?: Array<ScoreBreakdown | undefined> } {
     const index = this.config.routes.findIndex((r) => r.id === req.model);
     if (index === -1) {
       const known = this.config.routes.map((r) => r.id).join(", ");
@@ -1482,93 +1746,95 @@ export class RoutingEngine {
     }
     const chain = this.config.routes.slice(index).map(normalizeRoute);
     const strategy = this.config.strategy;
-    if (strategy === "round-robin" && chain.length > 1) {
-      const offset = this.rrCounter++ % chain.length;
-      if (offset > 0) chain.push(...chain.splice(0, offset));
-    } else if (strategy === "weighted" && chain.length > 1) {
-      // Weighted-random start, then fallback order from there.
-      const weights = chain.map((r) => (r.weight && r.weight > 0 ? r.weight : 1));
-      const total = weights.reduce((a, b) => a + b, 0);
-      let pick = this.rng() * total;
-      let offset = 0;
-      for (let i = 0; i < weights.length; i++) {
-        pick -= weights[i]!;
-        if (pick <= 0) {
-          offset = i;
-          break;
-        }
-      }
-      if (offset > 0) chain.push(...chain.splice(0, offset));
-    } else if (strategy === "least-latency" && chain.length > 1) {
-      // Fastest-first by observed EMA. Unobserved routes sort BEFORE observed
-      // ones (bounded exploration: every route gets sampled once) and keep
-      // their original relative order among themselves.
-      const withIdx = chain.map((route, i) => ({
-        route,
-        i,
-        ema: this.latencyEma.get(route.id),
-      }));
-      withIdx.sort((a, b) => {
-        if (a.ema !== undefined && b.ema !== undefined) return a.ema - b.ema;
-        if (a.ema === undefined && b.ema !== undefined) return -1;
-        if (b.ema === undefined && a.ema !== undefined) return 1;
-        return a.i - b.i;
-      });
-      for (let i = 0; i < withIdx.length; i++) chain[i] = withIdx[i]!.route;
-    } else if (
-      (strategy === "cheapest" || strategy === "balanced" || strategy === "quality-first") &&
-      chain.length > 1
-    ) {
-      const order = this.policyOrder(chain, req, strategy, task);
-      for (let i = 0; i < order.length; i++) chain[i] = order[i]!;
-    }
-    return chain;
-  }
-
-  /** Cost/quality-aware ordering for cheapest/balanced/quality-first. */
-  private policyOrder(
-    chain: NormalizedRoute[],
-    req: ChatRequest,
-    strategy: RoutingStrategy,
-    task?: string,
-  ): NormalizedRoute[] {
     const inputTokens = estimateTokens(req);
-    const estCosts = chain.map((route) => {
-      const price = priceLookup(this.pricing, route.id, route.model);
-      return price ? estimateCostUsd(price, inputTokens, req.max_tokens) : undefined;
+    const task = this.resolveTask(routing, req, inputTokens);
+    // Round-robin consumes its counter only when actually rotating.
+    const counter = strategy === "round-robin" && chain.length > 1 ? this.rrCounter++ : 0;
+    const result = arrangeChain({
+      strategy,
+      op: op === "stream" ? "stream" : "complete",
+      task,
+      rng: this.rng,
+      rrCounter: counter,
+      health: this.health,
+      outcomes: this.outcomes,
+      estimateTokensFn: estimateTokens,
+      pricing: this.pricing,
+      weights: this.config.weights,
+      req,
+      chain,
     });
-    const healthSnapshots = this.health.snapshot();
-    const latencies = chain.map((route) =>
-      medianLatencyOf(healthSnapshots, route.id) ?? this.latencyEma.get(route.id),
-    );
-    const successRates = chain.map((route) => successRateOf(healthSnapshots, route.id));
+    const finalChain = result.chain;
 
-    if (strategy === "cheapest") {
-      // Priced candidates by ascending estimate; unpriced follow in config order.
-      const idx = chain.map((_, i) => i);
-      idx.sort((a, b) => {
-        const ca = estCosts[a];
-        const cb = estCosts[b];
-        if (ca !== undefined && cb !== undefined) return ca - cb;
-        if (ca !== undefined) return -1;
-        if (cb !== undefined) return 1;
-        return a - b;
+    if (
+      !forExplain &&
+      finalChain.length > 1 &&
+      (strategy === "least-latency" || strategy === "cheapest" ||
+        strategy === "balanced" || strategy === "quality-first") &&
+      this.exploreActive()
+    ) {
+      const victim = 1 + Math.floor(this.rng() * (finalChain.length - 1));
+      const promoted = finalChain[victim]!;
+      const replaced = finalChain[0]!;
+      finalChain[victim] = replaced;
+      finalChain[0] = promoted;
+      if (result.breakdowns) {
+        const b0 = result.breakdowns[0];
+        result.breakdowns[0] = result.breakdowns[victim];
+        result.breakdowns[victim] = b0;
+      }
+      this.emitLog(callOnLog, {
+        type: "explore",
+        ts: Date.now(),
+        strategy,
+        promotedRouteId: promoted.id,
+        replacedRouteId: replaced.id,
       });
-      return idx.map((i) => chain[i]!);
     }
-
-    const qualities =
-      strategy === "balanced"
-        ? chain.map(() => undefined)
-        : chain.map((route) => this.outcomes.quality(task, route.id));
-    const scores = balancedScores({ estCosts, latencies, successRates, qualities });
-    return orderByScore(scores).map((i) => chain[i]!);
+    return { chain: finalChain, breakdowns: result.breakdowns };
   }
 
-  /** Exponential-moving-average success latency per route (alpha 0.3). */
-  private recordLatency(routeId: string, ms: number): void {
-    const prev = this.latencyEma.get(routeId);
-    this.latencyEma.set(routeId, prev === undefined ? ms : 0.3 * ms + 0.7 * prev);
+  /** Exploration trigger: epsilon draw or interval counter. Default off. */
+  private exploreActive(): boolean {
+    if (this.exploreEpsilon > 0 && this.rng() < this.exploreEpsilon) return true;
+    if (this.exploreInterval > 0 && ++this.exploreCount % this.exploreInterval === 0) return true;
+    return false;
+  }
+
+  /** Task bucket for outcome memory / quality ordering. */
+  private resolveTask(
+    routing: RoutingOptions | undefined,
+    req: ChatRequest,
+    inputTokens: number,
+  ): string | undefined {
+    return routing?.task ?? (this.autoTask ? inferTask(req, inputTokens) : undefined);
+  }
+
+  /**
+   * Run registered quality evaluators over a successful complete() response
+   * and feed the averaged score into outcome memory. Abstentions
+   * (undefined) and throws are swallowed; evaluation never breaks routing.
+   */
+  private async runEvaluators(
+    routeId: string,
+    req: ChatRequest,
+    value: ChatResponse,
+    task?: string,
+  ): Promise<void> {
+    if (!this.evaluators || this.evaluators.length === 0) return;
+    const scores: number[] = [];
+    for (const evaluator of this.evaluators) {
+      try {
+        const q = await evaluator.evaluate({ request: req, response: value, task });
+        if (typeof q === "number" && q >= 0 && q <= 1) scores.push(q);
+      } catch {
+        // Evaluator failure = abstention.
+      }
+    }
+    if (scores.length === 0) return;
+    const avg = scores.reduce((a, b) => a + b, 0) / scores.length;
+    this.outcomes.record({ routeId, task, quality: avg, success: true });
+    this.markStateDirty();
   }
 
   /**
@@ -1637,6 +1903,7 @@ export class RoutingEngine {
 
   private cbRecordSuccess(routeId: string): void {
     this.cbState.delete(routeId);
+    this.markStateDirty();
   }
 
   private cbRecordFailure(routeId: string): void {
@@ -1657,6 +1924,7 @@ export class RoutingEngine {
       s.opens++;
       s.openUntil = now + Math.min(this.cbCooldownMs * 2 ** (s.opens - 1), this.cbMaxCooldownMs);
     }
+    this.markStateDirty();
   }
 
   private cbIsOpen(routeId: string): boolean {

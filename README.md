@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.2.0, pre-release. The TypeScript core is feature-complete for
+**Status:** v0.3.0, pre-release. The TypeScript core is feature-complete for
 its scope and covered by mock-based tests plus shared conformance fixtures.
 A Python SDK built against the same fixtures is planned but does not exist
 yet. The package is not yet published to npm.
@@ -41,8 +41,12 @@ yet. The package is not yet published to npm.
 - **Ordered fallback chains** — a request tries route *i*, then *i+1*, … until one succeeds.
 - **Capability-aware routing** — declare what each model supports (`tools`, `vision`, `structuredOutput`, `contextWindow`, …); incompatible candidates are eliminated before any network I/O.
 - **Cost-aware routing** — `cheapest` and `balanced` strategies from declared pricing, plus per-call `maxCostUsd` constraints.
-- **Latency-aware routing** — `least-latency` EMA plus observed p50/p95/p99 and stream TTF percentiles feeding policies and `maxLatencyMs` constraints.
-- **Quality-aware routing (adaptive foundation)** — applications record outcomes via `recordOutcome()`; `quality-first` routes by measured task quality.
+- **Latency-aware routing** — `least-latency` orders by fresh per-operation latency (complete total vs stream TTFB are tracked separately); observed p50/p95/p99 feed policies and `maxLatencyMs` constraints. Samples expire (`decay.sampleTtlMs`), so stale winners get re-sampled instead of ruling forever.
+- **Quality-aware routing (adaptive)** — applications record outcomes via `recordOutcome()`, or plug in `evaluators` that score responses automatically; `quality-first` routes by measured task quality with optional `autoTask` workload inference.
+- **Persistent learning** — `stateStore` (Redis adapter included) shares health stats, outcome memory, and circuit breakers across restarts and replicas; `decay.halfLifeMs` fades stale evidence toward neutral.
+- **Statistical rigor** — Wilson lower-bound reliability (a lucky 3/3 can't outrank a proven 12/13), thin-sample shrinkage, timeout-share penalty, and actual-vs-estimated cost correction.
+- **Explorable decisions** — `explain()` returns candidates, rejection reasons, estimated cost, observed latencies, and the composite score breakdown; opt-in `explore` probes emit log events naming every forced detour.
+- **Replayable strategies** — `replayStrategy()` answers "what would strategy X have picked?" offline over recorded events using the same ordering code as production.
 - **Retries with backoff** — exponential, honoring provider `Retry-After`, clamped to the caller's `deadlineMs`.
 - **API-key rotation** — key pools per route, rotated on key-related errors; rate-limited keys cool down instead of burning attempts.
 - **Rate limiting** — per-route rpm (pre-flight) and tpm (post-hoc) sliding windows.
@@ -156,13 +160,15 @@ chain start; tail routes still serve if the chosen start fails.
 | `"fallback"` *(default)* | Strict config order — primary until it fails. |
 | `"round-robin"` | Each request rotates the chain start cyclically. |
 | `"weighted"` | Start picked proportionally to route `weight`, then falls back in order. |
-| `"least-latency"` | Fastest-first by per-route latency EMA of observed successes; unobserved routes are sampled first. |
-| `"cheapest"` | Priced routes by estimated per-request USD ascending (input estimate + `max_tokens` at declared prices); unpriced routes follow in config order. Requires `pricing`. |
-| `"balanced"` | Score = 0.5·cost + 0.3·speed + 0.2·reliability, rank-normalized across candidates; unpriced/unobserved signals are neutral. |
-| `"quality-first"` | Orders by application-recorded outcome quality (`recordOutcome`, keyed by `routing.task`); degrades to balanced scoring without data. |
+| `"least-latency"` | Fastest-first by fresh per-operation latency (complete total vs stream TTFB tracked separately); unobserved routes are sampled first, expired samples re-open exploration. |
+| `"cheapest"` | Priced routes by estimated per-request USD ascending (input estimate + `max_tokens` at declared prices, corrected by the route's observed actual/estimate ratio); unpriced routes follow in config order. Requires `pricing`. |
+| `"balanced"` | Score = wCost·cost + wSpeed·speed + wRel·reliability (defaults 0.5/0.3/0.2, tunable via `config.weights`), rank-normalized across candidates; reliability is a Wilson lower bound penalized by timeout share. Unpriced/unobserved signals are neutral. |
+| `"quality-first"` | Orders by application-recorded outcome quality (`recordOutcome` or `evaluators`, keyed by `routing.task` or inferred under `autoTask`); degrades to balanced scoring without data. |
 
-Latency, health, and outcome tracking is in-process (per engine instance).
-See [Current limitations](#current-limitations).
+Adaptive strategies keep learning across restarts and replicas when a
+`stateStore` is configured; without one, all learned state stays in-process.
+Opt in to `explore: { epsilon, interval }` to force periodic probes of
+non-primary candidates (logged as `explore` events).
 
 ### Capability-aware routing
 
@@ -236,7 +242,7 @@ const decision = await router.explain({
 
 Executes nothing, consumes no quota, and never contains credentials.
 
-### Recording outcomes (adaptive foundation)
+### Recording outcomes (adaptive routing)
 
 Applications know quality best — faithfulness for summarization, task
 completion for agents. Record what happened and `quality-first` routing uses
@@ -390,6 +396,7 @@ validated on construction.
 interface RouterConfig {
   routes: ModelRoute[];   // ordered fallback chain
   strategy?: RoutingStrategy; // fallback | round-robin | weighted | least-latency | cheapest | balanced | quality-first
+  weights?: { cost?: number; speed?: number; reliability?: number }; // balanced scoring, defaults .5/.3/.2
 }
 ```
 
@@ -411,8 +418,9 @@ Route fields:
 | `budget` | `{ usd, windowMs? }`. Requires `pricing`. |
 | `weight` | Traffic share under `strategy: "weighted"`. |
 
-Engine options (second constructor argument): `store`, `fetchImpl`, `sleep`,
-`rng`, `middleware`, `circuitBreaker`, `pricing`, `responseCache`,
+Engine options (second constructor argument): `store`, `stateStore`,
+`decay`, `explore`, `emaAlpha`, `evaluators`, `autoTask`, `fetchImpl`,
+`sleep`, `rng`, `middleware`, `circuitBreaker`, `pricing`, `responseCache`,
 `guardrails`, `onLog`. All optional; all injectable for testing.
 
 Per-request options: `signal` (abort), `deadlineMs` (wall-clock budget),
@@ -488,14 +496,18 @@ semantics atomically via Lua (ZSET-backed), works with ioredis, node-redis,
 or any client exposing EVAL, has no hard dependency on either, and fails
 open by default when Redis is unreachable.
 
-What stays in-process regardless of store: circuit-breaker state and the
-latency EMA. Multi-replica circuit breaking is a known limitation, listed below.
+What can stay in-process: nothing that needs to learn. Inject a
+`stateStore` (e.g. `RedisStateStore` from `@ai-router/redis`) to persist and
+share health stats, outcome memory, and circuit-breaker state across
+restarts and replicas — snapshots are last-writer-wins with TTLs, which is
+the right trade-off for telemetry-grade routing state. Rate limiting and
+budgets use the atomic sliding-window `RateLimitStore` path.
 
 ## Testing
 
 ```bash
 npm install          # first
-npm test             # vitest across all packages (~280 cases)
+npm test             # vitest across all packages (~340 cases)
 npm run conformance  # cross-SDK fixture tests
 npm run typecheck    # depends on build
 npm run build        # turbo build (core → redis → apps)
@@ -551,15 +563,17 @@ OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... \
 
 Honest list; none are hidden behind marketing:
 
-- **Pre-release software.** v0.2.0, unstable API, not yet on npm, no CI
+- **Pre-release software.** v0.3.0, unstable API, not yet on npm, no CI
   pipeline yet.
-- **In-process intelligence.** Circuit-breaker state, latency/health tracking,
-  key cooldowns, outcome memory, and response-cache coordination are per
-  engine instance. Only rate limiting and budgets have a shared-store path today.
-- **Cost estimates are estimates.** `cheapest`/`balanced` and `maxCostUsd` use
-  a token heuristic plus declared pricing (output assumed ≈ input when
-  `max_tokens` is unset); actual spend accounting from provider usage remains
-  the source of truth for budgets.
+- **Shared learned state is snapshot-grade.** `stateStore` persistence is
+  last-writer-wins per key with debounced flushes — replicas converge on
+  fresh-enough data, and a crash can lose up to one flush interval. Only
+  rate limits/budgets get atomic cross-replica semantics today.
+- **Cost estimates are estimates.** `cheapest`/`balanced` and `maxCostUsd`
+  use a token heuristic plus declared pricing (output assumed ≈ input when
+  `max_tokens` is unset); the estimate is corrected over time by each
+  route's observed actual-cost ratio, but actual spend accounting from
+  provider usage remains the source of truth for budgets.
 - **Response cache is naive.** Exact-match FNV-1a hashing of the serialized
   request; fine for dedup, not adversarial-key safe. Bring a stronger hash in
   your backing store if that matters.
@@ -591,8 +605,10 @@ application-recorded quality as adaptive signals.
 - Capability-aware routing (`capabilities` + `routing.require` + inference)
 - Cost/latency/quality policies: `cheapest`, `balanced`, `quality-first`,
   `maxCostUsd`, `maxLatencyMs`, custom filters
-- Health tracking (percentiles, error tallies, key cooldowns) in `stats()`
-- Dry-run routing via `explain()`; `recordOutcome()` adaptive foundation
+- Health tracking (percentiles per operation, error tallies, key cooldowns) in `stats()`
+- Dry-run routing via `explain()` with score breakdowns; `recordOutcome()`, pluggable `evaluators`, `autoTask` inference
+- Persistent learned state via `stateStore` (+ `RedisStateStore`); decay/staleness controls; opt-in exploration
+- Offline strategy replay (`replayStrategy`)
 - Guardrails (input/output, block + rewrite), structured `onLog` events,
   call summaries with TTFB
 - Committed streaming, embeddings, multimodal content, tool calling,
@@ -608,7 +624,7 @@ application-recorded quality as adaptive signals.
 
 **Exploring**
 
-- Cross-replica health/circuit sharing alongside the Redis store
+- Strongly-consistent cross-replica circuit breaking (snapshot sharing ships today)
 - Throughput (tokens/sec) as a first-class routing signal
 - richer A/B/canary primitives on top of weighted routing
 
