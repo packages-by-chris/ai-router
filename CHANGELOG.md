@@ -8,6 +8,24 @@ offline replay harness. Backwards compatible: every new option is optional,
 legacy `stats()`/health snapshot fields are preserved, and default behavior
 changes only where the old behavior was a bug (see Fixed).
 
+### Added — OpenAI-compatible gateway (optional)
+
+- `apps/gateway` (`@ai-router/gateway`): zero-dependency `node:http` server
+  exposing an `AIRouter` over the OpenAI wire format — `/v1/models`,
+  `/v1/chat/completions` (JSON + SSE), `/v1/embeddings`, `/healthz`. Lets
+  tools that can't embed libraries (Cursor, OpenCode, Aider, …) route
+  through the same fallback chains, key pools, budgets, and circuit
+  breakers as application code. Bearer auth with constant-time compare
+  (`GATEWAY_API_KEY`; refuses to start unset), `${ENV_VAR}` config
+  interpolation keeps provider keys server-side, client disconnects abort
+  upstream fetches, engine errors map to HTTP semantics (`429` +
+  `Retry-After`, `502` for exhausted chains, `504` deadlines). Observability
+  extensions: `x-ai-router-route/model/attempts/cost-usd` response headers,
+  `x-routing-*` request headers mapped to per-call routing constraints
+  (`task`, `maxCostUsd`, `maxLatencyMs`, `require.tools`), and
+  `GET /admin/stats` returning the engine's `stats()` snapshot. Library
+  usage is unchanged and independent of this app.
+
 ### Added — persistent learned state (P0)
 
 - `EngineOptions.stateStore` (`RouterStateStore`: get/set JSON): persists

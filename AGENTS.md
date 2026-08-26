@@ -7,6 +7,7 @@ Turborepo monorepo. npm workspaces.
 ```
 packages/core/   → @ai-router/core — the library (zero runtime deps)
 packages/redis/  → @ai-router/redis — Redis RateLimitStore adapter
+apps/gateway/    → OpenAI-compatible HTTP gateway over AIRouter (optional; tools like Cursor/OpenCode)
 apps/example/    → Next.js chat UI (demo)
 apps/docs/       → Next.js docs site
 scripts/smoke.ts → live provider smoke test

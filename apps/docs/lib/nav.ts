@@ -39,6 +39,10 @@ export const NAV: NavSection[] = [
     ],
   },
   {
+    title: "Gateway",
+    items: [{ slug: "gateway" }],
+  },
+  {
     title: "Reference",
     items: [{ slug: "api-reference" }, { slug: "conformance" }],
   },
@@ -67,6 +71,7 @@ export const PAGE_LABELS: Record<string, string> = {
   guardrails: "Guardrails",
   observability: "Observability",
   errors: "Errors",
+  gateway: "Gateway",
   "api-reference": "API reference",
   conformance: "Conformance",
 };

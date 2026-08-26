@@ -1,0 +1,24 @@
+{
+  "name": "@ai-router/gateway",
+  "version": "0.1.0",
+  "private": true,
+  "description": "OpenAI-compatible HTTP gateway in front of @ai-router/core — point Claude Code, Cursor, OpenCode, or any OpenAI client at your routing config.",
+  "type": "module",
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "dev": "tsx watch src/cli.ts",
+    "start": "tsx src/cli.ts",
+    "test": "vitest run",
+    "typecheck": "tsc -p tsconfig.json --noEmit"
+  },
+  "dependencies": {
+    "@ai-router/core": "*"
+  },
+  "devDependencies": {
+    "@types/node": "^24.0.0",
+    "tsx": "^4.19.0",
+    "typescript": "^5.5.0"
+  }
+}

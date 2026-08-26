@@ -71,3 +71,4 @@ name. That indirection is what makes fallback possible.
 - [Configuration](/docs/configuration) — the full config schema and validation rules
 - [Routing & fallback](/docs/routing) — retries, key rotation, and the recovery layers
 - [Examples](/docs/examples) — copy-paste recipes for common setups
+- [Gateway](/docs/gateway) — expose your config as an OpenAI-compatible endpoint for tools like Cursor or OpenCode

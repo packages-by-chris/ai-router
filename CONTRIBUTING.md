@@ -18,6 +18,7 @@ npm run build        # turbo build
 ```
 packages/core/   @ai-router/core — the library (zero runtime deps)
 packages/redis/  @ai-router/redis — Redis RateLimitStore adapter
+apps/gateway/    OpenAI-compatible HTTP gateway (optional, for tools)
 apps/example/    Next.js chat demo
 apps/docs/       docs site
 ```

@@ -150,6 +150,24 @@ hosted gateway when many heterogeneous applications need one shared control
 plane — the two approaches also compose: ai-router can route to a gateway as
 just another OpenAI-compatible provider.
 
+### Optional: expose it as an endpoint
+
+Tools you don't control (Cursor, OpenCode, Aider, Continue, …) can't import
+npm libraries — they speak HTTP. The optional gateway app wraps the same
+router in a zero-dependency OpenAI-compatible server:
+
+```bash
+ROUTER_CONFIG=./router.json GATEWAY_API_KEY=$(openssl rand -hex 32) \
+  npm run dev -w @ai-router/gateway
+# Base URL: http://127.0.0.1:8787/v1 · API key: $GATEWAY_API_KEY · Model: route id
+```
+
+Same config, same engine — fallback chains, key rotation, budgets, and
+circuit breakers now apply to your tools too. Provider keys stay
+server-side; tools only ever hold the gateway's door-pass key. See
+[the gateway docs](apps/docs/content/gateway.md). Your application code
+never needs this — import the SDK directly and skip the hop.
+
 ## Routing strategies
 
 Configured at the top level with `strategy`. Strategies reorder the fallback
@@ -615,6 +633,7 @@ application-recorded quality as adaptive signals.
   structured output, reasoning surfaces, `raw()` escape hatch
 - `@ai-router/redis` shared rate-limit store
 - Conformance fixture suite (request/response/chunk/SSE)
+- Optional OpenAI-compatible gateway (`apps/gateway`) for tools like Cursor/OpenCode
 
 **Planned**
 
@@ -641,6 +660,7 @@ Repository layout:
 ```
 packages/core/    @ai-router/core — the library
 packages/redis/   @ai-router/redis — shared RateLimitStore
+apps/gateway/     OpenAI-compatible HTTP gateway (optional, for tools)
 apps/example/     Next.js chat demo (env-driven fallback chain)
 apps/docs/        Documentation site
 scripts/smoke.ts  Live provider smoke test
