@@ -79,6 +79,10 @@ class ProviderError(AIRouterError):
         self.body = body
         self.cause = cause
 
+    @property
+    def retryAfterMs(self) -> int | None:
+        return self.retry_after_ms
+
 
 @dataclass
 class AttemptRecord:

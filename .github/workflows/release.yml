@@ -1,0 +1,76 @@
+name: Release
+
+on:
+  workflow_dispatch:
+
+permissions:
+  contents: write
+  id-token: write
+
+jobs:
+  publish-npm:
+    name: Publish to npm
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          registry-url: "https://registry.npmjs.org"
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Build packages
+        run: npm run build
+
+      - name: Run verification tests
+        run: |
+          npm test
+          npm run conformance
+          npm run typecheck
+
+      - name: Publish @ai-router/core to npm
+        run: npm publish --workspace @ai-router/core --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+      - name: Publish @ai-router/redis to npm
+        run: npm publish --workspace @ai-router/redis --access public --provenance
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+
+  publish-pypi:
+    name: Publish to PyPI
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install uv
+        uses: astral-sh/setup-uv@v3
+        with:
+          enable-cache: true
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Run Python verification tests
+        run: |
+          uv run --project packages/python --with pytest --with pytest-asyncio pytest packages/python/tests
+          uv run --project packages/python --with pytest --with pytest-asyncio pytest packages/python/tests/test_conformance.py
+          uv run --project packages/python --with mypy mypy packages/python/src
+
+      - name: Build Python distribution (wheel + sdist)
+        run: uv build --project packages/python --out-dir packages/python/dist
+
+      - name: Publish package to PyPI
+        uses: pypa/gh-action-pypi-publish@release/v1
+        with:
+          packages-dir: packages/python/dist/

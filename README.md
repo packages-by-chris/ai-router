@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.3.0, pre-release. Both TypeScript (`@ai-router/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
+**Status:** v0.1.0, initial release. Both TypeScript (`@ai-router/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
 
 ## What you get
 
@@ -584,7 +584,6 @@ Honest list; none are hidden behind marketing:
 - **Modality scope.** Text chat, vision inputs, embeddings. Audio, image
   generation, and video are out of scope by design.
 - **Guardrails on streams are input-only**, as described above.
-- **Python SDK does not exist yet.**
 
 ## Roadmap
 
@@ -597,8 +596,8 @@ application-recorded quality as adaptive signals.
 - Adapters: OpenAI, Azure, Anthropic, Gemini, Bedrock (Converse + SigV4),
   Vertex (JWT auth), openai-compatible + 30+ presets
 - Fallback chains, retries with backoff, key-pool rotation, circuit breaker
-  with graduated cooldowns, call deadlines
-- Sliding-window rate limits, USD budgets, tiered pricing, response cache
+  with half-open canary probing & graduated cooldowns, call deadlines
+- Sliding-window rate limits, USD budgets, tiered pricing, response cache (SHA-256)
 - Capability-aware routing (`capabilities` + `routing.require` + inference)
 - Cost/latency/quality policies: `cheapest`, `balanced`, `quality-first`,
   `maxCostUsd`, `maxLatencyMs`, custom filters
@@ -610,20 +609,16 @@ application-recorded quality as adaptive signals.
   call summaries with TTFB
 - Committed streaming, embeddings, multimodal content, tool calling,
   structured output, reasoning surfaces, `raw()` escape hatch
-- `@ai-router/redis` shared rate-limit store
-- Conformance fixture suite (request/response/chunk/SSE)
-
-**Planned**
-
-- Python SDK validated against the same conformance fixtures (validator port:
-  new strategies + `capabilities` field — see CHANGELOG)
-- CI pipeline and first npm release
+- `@ai-router/redis` shared rate-limit store & state store
+- Python SDK (`ai-router`) with full sync & async APIs and 1:1 parity with TypeScript
+- Cross-SDK conformance fixture suite (request/response/chunk/SSE)
+- GitHub Actions CI matrix testing across Node.js (18, 20, 22) and Python (3.10-3.13)
 
 **Exploring**
 
 - Strongly-consistent cross-replica circuit breaking (snapshot sharing ships today)
 - Throughput (tokens/sec) as a first-class routing signal
-- richer A/B/canary primitives on top of weighted routing
+- Richer A/B/canary primitives on top of weighted routing
 
 ## Contributing
 

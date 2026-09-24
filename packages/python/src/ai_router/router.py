@@ -63,6 +63,7 @@ class AIRouter:
         rng: Any = None,
         middleware: Any = None,
         env: dict[str, str] | None = None,
+        circuitBreaker: CircuitBreakerConfig | dict[str, Any] | None = None,
     ) -> None:
         if isinstance(config, RouterConfig):
             self.config = config
@@ -73,7 +74,7 @@ class AIRouter:
             config=self.config,
             store=store,
             pricing=pricing,
-            circuit_breaker=circuit_breaker,
+            circuit_breaker=circuit_breaker if circuit_breaker is not None else circuitBreaker,
             guardrails=guardrails,
             auto_task=auto_task,
             state_store=state_store,

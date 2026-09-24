@@ -214,6 +214,7 @@ class RoutingEngine:
         sleep: Any = None,
         rng: Any = None,
         middleware: Any = None,
+        circuitBreaker: CircuitBreakerConfig | dict[str, Any] | None = None,
     ) -> None:
         self.config = config if isinstance(config, RouterConfig) else RouterConfig(**config)
         self.store: RateLimitStore = store or MemoryStore()
@@ -226,11 +227,12 @@ class RoutingEngine:
         self.rng = rng
         self.middleware = middleware
 
+        cb_arg = circuit_breaker if circuit_breaker is not None else circuitBreaker
         cb: dict[str, Any] = {}
-        if isinstance(circuit_breaker, CircuitBreakerConfig):
-            cb = circuit_breaker.to_dict()
-        elif isinstance(circuit_breaker, dict):
-            cb = circuit_breaker
+        if isinstance(cb_arg, CircuitBreakerConfig):
+            cb = cb_arg.to_dict()
+        elif isinstance(cb_arg, dict):
+            cb = cb_arg
 
         self.cb_threshold = cb.get("threshold", 5)
         self.cb_cooldown_ms = cb.get("cooldownMs", cb.get("cooldown_ms", 30_000))
@@ -282,10 +284,22 @@ class RoutingEngine:
                 return list(self.normalized_routes[i:])
         raise ConfigError(f'unknown route id: "{route_id}"')
 
-    def _is_cb_open(self, route_id: str, now: float | None = None) -> bool:
+    def _is_cb_open(self, route_id: str, now: float | None = None, for_explain: bool = False) -> bool:
         current_time = now if now is not None else time.time() * 1000.0
         cb = self._cb_state.get(route_id)
-        return bool(cb and current_time < cb.get("openUntil", 0))
+        if not cb:
+            return False
+        open_until = cb.get("openUntil", 0)
+        if current_time < open_until:
+            return True
+        if open_until > 0:
+            if for_explain:
+                return bool(cb.get("probing", False))
+            if cb.get("probing", False):
+                return True
+            cb["probing"] = True
+            return False
+        return False
 
     async def complete(
         self,
@@ -559,18 +573,30 @@ class RoutingEngine:
                         raise
 
                     kind: ErrorKind = getattr(err, "kind", "unknown") if isinstance(err, ProviderError) else "network"
-                    retry_after = getattr(err, "retryAfterMs", None) if isinstance(err, ProviderError) else None
+                    retry_after = (
+                        getattr(err, "retry_after_ms", None)
+                        if isinstance(err, ProviderError) and getattr(err, "retry_after_ms", None) is not None
+                        else (getattr(err, "retryAfterMs", None) if isinstance(err, ProviderError) else None)
+                    )
                     status_code = getattr(err, "status", None) if isinstance(err, ProviderError) else None
 
                     self.health.recordFailure(route.id, kind, keyIndex=key_idx, retryAfterMs=retry_after, op="complete")
 
                     # Update circuit breaker
+                    now_ms = time.time() * 1000.0
                     cb_info = self._cb_state.get(route.id, {"failures": 0, "openUntil": 0, "opens": 0})
-                    cb_info["failures"] += 1
-                    if cb_info["failures"] >= self.cb_threshold:
-                        cb_info["opens"] += 1
+                    if cb_info.get("probing") or (cb_info.get("openUntil", 0) > 0 and now_ms >= cb_info.get("openUntil", 0)):
+                        cb_info["probing"] = False
+                        cb_info["opens"] = cb_info.get("opens", 0) + 1
                         cooldown = min(self.cb_max_cooldown_ms, self.cb_cooldown_ms * (2 ** (cb_info["opens"] - 1)))
-                        cb_info["openUntil"] = time.time() * 1000.0 + cooldown
+                        cb_info["openUntil"] = now_ms + cooldown
+                        cb_info["failures"] = self.cb_threshold
+                    else:
+                        cb_info["failures"] = cb_info.get("failures", 0) + 1
+                        if cb_info["failures"] >= self.cb_threshold and cb_info.get("openUntil", 0) == 0:
+                            cb_info["opens"] = cb_info.get("opens", 0) + 1
+                            cooldown = min(self.cb_max_cooldown_ms, self.cb_cooldown_ms * (2 ** (cb_info["opens"] - 1)))
+                            cb_info["openUntil"] = now_ms + cooldown
                     self._cb_state[route.id] = cb_info
 
                     if is_key_related_kind(kind) and pool_size > 1:
@@ -844,7 +870,7 @@ class RoutingEngine:
                 continue
 
             # 1. Circuit breaker
-            if self._is_cb_open(r.id):
+            if self._is_cb_open(r.id, for_explain=True):
                 entry.status = "rejected"
                 entry.reasons.append("circuit breaker open")
                 continue

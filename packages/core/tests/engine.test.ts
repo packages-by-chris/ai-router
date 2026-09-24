@@ -68,6 +68,26 @@ describe("RoutingEngine.complete", () => {
     expect(mock.header(1, "authorization")).toBe("Bearer k2");
   });
 
+  test("single-key route retries on 429 with backoff before falling back", async () => {
+    const mock = new MockFetch(
+      jsonResponse(429, { error: { message: "rate limited" } }, { "retry-after": "1" }),
+      jsonResponse(200, completionJson()),
+    );
+    const slept: number[] = [];
+    const engine = new RoutingEngine(
+      config([{ apiKey: "k1", maxRetries: 2 }]),
+      { fetchImpl: mock.fetch, sleep: async (ms) => { slept.push(ms); }, rng: () => 0 },
+    );
+
+    const res = await engine.complete(req);
+    expect(res.choices[0]!.message.content).toBe("hello");
+    expect(mock.calls).toHaveLength(2);
+    expect(mock.header(0, "authorization")).toBe("Bearer k1");
+    expect(mock.header(1, "authorization")).toBe("Bearer k1");
+    expect(slept).toHaveLength(1);
+    expect(slept[0]).toBe(1000); // 1s from Retry-After
+  });
+
   test("skips a route whose rate limit is exhausted, without calling it", async () => {
     const store = new MemoryStore({ now: () => 0 });
     // Exhaust route "a"'s rpm budget (limit 1) before the request.
