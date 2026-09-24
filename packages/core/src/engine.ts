@@ -445,8 +445,8 @@ export class RoutingEngine {
   private readonly responseCache?: EngineOptions["responseCache"];
   private readonly guardrails?: Guardrails;
   private readonly onLog?: (event: LogEvent) => void;
-  /** Circuit breaker state: consecutive failures per route and when it opens. */
-  private readonly cbState = new Map<string, { failures: number; openUntil: number; opens: number }>();
+  /** Circuit breaker state: consecutive failures per route, when it opens, and half-open probing state. */
+  private readonly cbState = new Map<string, { failures: number; openUntil: number; opens: number; probing?: boolean }>();
   /** Round-robin cursor so successive requests start on different keys. */
   private readonly keyCursor = new Map<string, number>();
   /** Round-robin chain rotation counter (strategy: "round-robin"). */
@@ -614,6 +614,8 @@ export class RoutingEngine {
     notify: Notify,
     callOnLog?: (event: LogEvent) => void,
   ): void {
+    const cb = this.cbState.get(route.id);
+    if (cb && cb.probing) cb.probing = false;
     const record: AttemptRecord = {
       routeId: route.id, provider: route.provider, model: route.model,
       outcome, attempts: 0, message,
@@ -671,9 +673,9 @@ export class RoutingEngine {
         throw err;
       }
 
-      // Exact-match response cache (complete only): hash the logical request.
+      // Exact-match response cache (complete only): hash the logical request with SHA-256.
       if (this.responseCache) {
-        const key = responseCacheKey(req);
+        const key = await responseCacheKey(req);
         try {
           const hit = await this.responseCache.get(key);
           if (hit) {
@@ -800,7 +802,7 @@ export class RoutingEngine {
       const task = this.resolveTask(routing, req, inputTokens);
       await this.runEvaluators(route.id, req, value, task);
       if (this.responseCache) {
-        const key = responseCacheKey(req);
+        const key = await responseCacheKey(req);
         void Promise.resolve(this.responseCache.set(key, JSON.stringify(value), this.responseCache.ttlMs)).catch(() => {});
       }
       onFinish?.({
@@ -1104,7 +1106,7 @@ export class RoutingEngine {
         routeId,
         failures: s.failures,
         openUntil: s.openUntil,
-        open: Date.now() < s.openUntil,
+        open: Date.now() < s.openUntil || s.probing === true,
         opens: s.opens,
       })),
       keyCursors: Object.fromEntries(this.keyCursor),
@@ -1178,7 +1180,7 @@ export class RoutingEngine {
         entry.reasons.push(reason);
       };
 
-      if (this.cbIsOpen(route.id)) {
+      if (this.cbIsOpen(route.id, true)) {
         reject("circuit breaker open");
         continue;
       }
@@ -1571,20 +1573,35 @@ export class RoutingEngine {
         // Rate limit / auth / permission: try the next key immediately.
         // If all keys exhausted (or only one key), fall back to next route.
         if (isKeyRelatedKind(last.kind)) {
-          keysExhausted++;
-          if (keysExhausted >= poolSize) break;
-          const prevKeyIndex = effectiveIndex;
-          keyIndex++;
-          notify({
-            routeId: route.id, provider: route.provider, model: route.model,
-            outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
-            kind: last.kind, message: last.message,
-          });
-          continue;
+          if (last.kind === "rate_limit" && poolSize > 1) {
+            keysExhausted++;
+            if (keysExhausted < poolSize) {
+              const prevKeyIndex = effectiveIndex;
+              keyIndex++;
+              notify({
+                routeId: route.id, provider: route.provider, model: route.model,
+                outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
+                kind: last.kind, message: last.message,
+              });
+              continue;
+            }
+          } else if (last.kind === "auth" || last.kind === "permission") {
+            keysExhausted++;
+            if (keysExhausted >= poolSize) break;
+            const prevKeyIndex = effectiveIndex;
+            keyIndex++;
+            notify({
+              routeId: route.id, provider: route.provider, model: route.model,
+              outcome: "retry", attempts: tries, keyIndex: prevKeyIndex,
+              kind: last.kind, message: last.message,
+            });
+            continue;
+          }
         }
         if (!isRetryableKind(last.kind)) break;
         if (retries < maxRetries) {
           retries++;
+          keysExhausted = 0;
           notify({
             routeId: route.id, provider: route.provider, model: route.model,
             outcome: "retry", attempts: tries, keyIndex: effectiveIndex,
@@ -1909,28 +1926,40 @@ export class RoutingEngine {
   private cbRecordFailure(routeId: string): void {
     const now = Date.now();
     const state = this.cbState.get(routeId);
-    if (state && now >= state.openUntil) {
-      // Cooldown expired, reset the consecutive-failure count; the breach
-      // count survives so graduated cooldowns keep escalating.
-      state.failures = 1;
-      state.openUntil = 0;
+    if (state && (state.probing || (state.openUntil > 0 && now >= state.openUntil))) {
+      state.probing = false;
+      state.opens++;
+      state.openUntil = now + Math.min(this.cbCooldownMs * 2 ** (state.opens - 1), this.cbMaxCooldownMs);
+      state.failures = this.cbThreshold;
     } else if (state) {
       state.failures++;
+      if (state.failures >= this.cbThreshold && state.openUntil === 0) {
+        state.opens++;
+        state.openUntil = now + Math.min(this.cbCooldownMs * 2 ** (state.opens - 1), this.cbMaxCooldownMs);
+      }
     } else {
       this.cbState.set(routeId, { failures: 1, openUntil: 0, opens: 0 });
-    }
-    const s = this.cbState.get(routeId)!;
-    if (s.failures >= this.cbThreshold && s.openUntil === 0) {
-      s.opens++;
-      s.openUntil = now + Math.min(this.cbCooldownMs * 2 ** (s.opens - 1), this.cbMaxCooldownMs);
+      if (this.cbThreshold <= 1) {
+        const s = this.cbState.get(routeId)!;
+        s.opens = 1;
+        s.openUntil = now + this.cbCooldownMs;
+      }
     }
     this.markStateDirty();
   }
 
-  private cbIsOpen(routeId: string): boolean {
+  private cbIsOpen(routeId: string, forExplain = false): boolean {
     const state = this.cbState.get(routeId);
     if (!state) return false;
-    return Date.now() < state.openUntil;
+    const now = Date.now();
+    if (now < state.openUntil) return true;
+    if (state.openUntil > 0) {
+      if (forExplain) return state.probing ?? false;
+      if (state.probing) return true;
+      state.probing = true;
+      return false;
+    }
+    return false;
   }
 
   private nextKeyIndex(route: NormalizedRoute): number {
@@ -2047,22 +2076,17 @@ function totalTries(attempts: AttemptRecord[], winningTries: number): number {
 }
 
 /**
- * Stable FNV-1a hash for exact-match response cache keys. 32-bit: fine for
- * cache dedup of well-formed requests, but collisions serve a wrong cached
- * response — use a stronger hash (SHA-256) in the backing store's key if
- * adversarial key construction is possible.
+ * SHA-256 hash for exact-match response cache keys (collision-resistant across multi-tenant workloads).
  */
-function fnv1a(input: string): string {
-  let h = 0x811c9dc5;
-  for (let i = 0; i < input.length; i++) {
-    h ^= input.charCodeAt(i);
-    h = Math.imul(h, 0x01000193);
-  }
-  return (h >>> 0).toString(16);
+async function sha256Hex(input: string): Promise<string> {
+  const bytes = new TextEncoder().encode(input);
+  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
-function responseCacheKey(req: ChatRequest): string {
-  return `${req.model}:${fnv1a(JSON.stringify(req))}`;
+async function responseCacheKey(req: ChatRequest): Promise<string> {
+  const hash = await sha256Hex(JSON.stringify(req));
+  return `${req.model}:${hash}`;
 }
 
 /**

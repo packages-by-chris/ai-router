@@ -142,6 +142,44 @@ describe("circuit_open outcome", () => {
     expect(failing.calls).toHaveLength(4); // pass 2 fetched only c
     expect(res.provider).toBe("gemini");
   });
+
+  test("cooldown expiry transitions to half-open allowing 1 probe request", async () => {
+    const mock = new MockFetch(
+      jsonResponse(500, {}), // call 1: route a fails (opens breaker)
+      jsonResponse(200, completionJson({ model: "b-model" })), // call 1: route b serves fallback
+      jsonResponse(200, completionJson({ model: "a-model" })), // call 2: canary probe on route a succeeds
+      jsonResponse(200, completionJson({ model: "a-model" })), // call 3: normal routing on route a
+    );
+    const engine = new RoutingEngine(
+      parseConfig({
+        routes: [
+          { id: "a", provider: "openai", model: "a-model", apiKey: "ka", maxRetries: 0 },
+          { id: "b", provider: "openai", model: "b-model", apiKey: "kb", maxRetries: 0 },
+        ],
+      }),
+      {
+        fetchImpl: mock.fetch,
+        sleep: noopSleep,
+        circuitBreaker: { threshold: 1, cooldownMs: 100_000 },
+      },
+    );
+
+    // Call 1: route a fails -> route b serves -> breaker for a opens
+    const res1 = await engine.complete(req);
+    expect(res1.model).toBe("b-model");
+
+    // Advance breaker past cooldown: route a becomes half-open
+    const cbState = (engine as any).cbState.get("a");
+    cbState.openUntil = 1;
+
+    // Call 2: canary probe runs on route a and succeeds -> breaker closes
+    const res2 = await engine.complete(req);
+    expect(res2.model).toBe("a-model");
+
+    // Call 3: circuit is fully closed, route a continues normally
+    const res3 = await engine.complete(req);
+    expect(res3.model).toBe("a-model");
+  });
 });
 
 describe("stream idle timeout", () => {
