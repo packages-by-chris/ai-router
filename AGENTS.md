@@ -5,15 +5,18 @@
 Turborepo monorepo. npm workspaces.
 
 ```
-packages/core/   → @ai-router/core — the library (zero runtime deps)
+packages/core/   → @ai-router/core — the TypeScript library (zero runtime deps)
+packages/python/ → ai-router — the Python SDK (Python 3.10+, zero runtime deps)
 packages/redis/  → @ai-router/redis — Redis RateLimitStore adapter
 apps/example/    → Next.js chat UI (demo)
 apps/docs/       → Next.js docs site
-scripts/smoke.ts → live provider smoke test
+scripts/smoke.ts → live provider smoke test (TypeScript)
+scripts/smoke.py → live provider smoke test (Python)
 ```
 
 ## Commands
 
+### TypeScript / Monorepo
 ```bash
 npm install          # must run first
 npm test             # vitest, all packages (no cache)
@@ -23,10 +26,27 @@ npm run build        # tsc for core/redis, next build for apps
 npm run smoke        # live API test — needs provider env vars
 ```
 
+### Python SDK
+```bash
+npm run test:python        # pytest, packages/python/tests
+npm run conformance:python # cross-SDK fixture tests (python)
+npm run typecheck:python   # mypy strict, packages/python/src
+npm run smoke:python       # live API test — needs provider env vars
+```
+
 Run single package test: `npm test -w @ai-router/core`
 Run single file: `npx vitest run packages/core/tests/config.test.ts`
 
 Order matters: `build → typecheck` (turbo dep). Tests don't depend on build.
+
+## Python SDK Guidelines
+
+- Python 3.10+ requirement
+- Zero mandatory runtime dependencies (standard library first)
+- Strict `mypy` typing & clean `pyright` language server diagnostics
+- PEP 604 pipe syntax for union types (`A | B`)
+- 100% pass on cross-SDK conformance fixtures (`packages/core/conformance/cases/*.json`)
+- Sync (`complete_sync`, `stream_sync`, `raw_sync`) and async (`complete`, `stream`, `raw`) APIs on `AIRouter`
 
 ## TypeScript
 
@@ -39,7 +59,7 @@ Order matters: `build → typecheck` (turbo dep). Tests don't depend on build.
 
 - `model` field in requests is a **route id**, never a provider model name
 - Provider adapters: OpenAI, Anthropic, Gemini, `openai-compatible`
-- Zero runtime deps — only `fetch` + WebStreams
+- Zero runtime deps — only `fetch` + WebStreams (TS) / `urllib` + `dataclasses` (Python)
 - Client-side library, not a gateway service
 - Conformance fixtures (`packages/core/conformance/cases/*.json`) are the cross-SDK drift guard — never edit unilaterally; port changes to both SDKs
 

@@ -13,7 +13,11 @@
     "conformance": "turbo run conformance",
     "dev": "turbo run dev",
     "smoke": "tsx scripts/smoke.ts",
-    "bench": "tsx scripts/bench.ts"
+    "bench": "tsx scripts/bench.ts",
+    "test:python": "uv run --project packages/python --with pytest --with pytest-asyncio pytest packages/python/tests",
+    "typecheck:python": "uv run --project packages/python --with mypy mypy packages/python/src",
+    "conformance:python": "uv run --project packages/python --with pytest --with pytest-asyncio pytest packages/python/tests/test_conformance.py",
+    "smoke:python": "uv run --project packages/python python scripts/smoke.py"
   },
   "devDependencies": {
     "tsx": "^4.19.0",
