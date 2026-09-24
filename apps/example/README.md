@@ -1,4 +1,4 @@
-# ai-router — Next.js example
+# ai-router-sdk — Next.js example
 
 Chat app with a **frontend-configurable fallback chain** and a **live
 routing timeline**: add routes (provider, model, key, rpm) in the UI, then

@@ -3,7 +3,7 @@
  * JSON-LD. Override the deployed origin with NEXT_PUBLIC_SITE_URL.
  */
 
-export const SITE_NAME = "ai-router";
+export const SITE_NAME = "ai-router-sdk";
 
 export const SITE_URL = (
   process.env.NEXT_PUBLIC_SITE_URL ?? "https://ai-router.dev"
@@ -12,7 +12,7 @@ export const SITE_URL = (
 export const SITE_TAGLINE = "Provider-agnostic AI routing for TypeScript";
 
 export const SITE_DESCRIPTION =
-  "ai-router puts fallback chains, key pools, rate limiting, and unified streaming for OpenAI, Anthropic, Gemini, and any OpenAI-compatible API behind one typed client — with zero runtime dependencies.";
+  "ai-router-sdk puts fallback chains, key pools, rate limiting, and unified streaming for OpenAI, Anthropic, Gemini, and any OpenAI-compatible API behind one typed client — with zero runtime dependencies.";
 
 export const SITE_KEYWORDS = [
   "AI router",

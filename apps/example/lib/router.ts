@@ -40,10 +40,10 @@ function makeRouter(
     pricing,
     middleware: {
       beforeRequest(ctx) {
-        console.log(`[ai-router] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
+        console.log(`[ai-router-sdk] → ${ctx.routeId} (${ctx.provider}/${ctx.model}) attempt #${ctx.attempt}`);
       },
       afterResponse(ctx, res) {
-        console.log(`[ai-router] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
+        console.log(`[ai-router-sdk] ← ${ctx.routeId} ok — ${res.usage?.total_tokens ?? "?"} tokens`);
       },
     },
   });

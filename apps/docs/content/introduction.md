@@ -1,6 +1,6 @@
 ---
 title: Introduction
-description: What ai-router is, why it exists, and how to install it.
+description: What ai-router-sdk is, why it exists, and how to install it.
 ---
 
 # Introduction
@@ -17,7 +17,7 @@ OpenAI-shaped code ports over with minimal changes.
 ## Why
 
 Calling providers directly couples you to their wire format, their failure
-modes, and their rate limits. ai-router sits between your app and the
+modes, and their rate limits. ai-router-sdk sits between your app and the
 providers and owns the boring parts:
 
 - **Fallback chains** — OpenAI down? The same logical `model` silently serves from Anthropic or Gemini.

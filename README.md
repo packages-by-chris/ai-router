@@ -1,8 +1,8 @@
-# ai-router
+# ai-router-sdk
 
-**An embeddable, provider-agnostic AI routing engine for TypeScript.**
+**An embeddable, provider-agnostic AI routing engine for TypeScript & Python.**
 
-ai-router provides the routing and reliability capabilities of an AI gateway
+ai-router-sdk provides the routing and reliability capabilities of an AI gateway
 without requiring you to deploy one. It runs inside your application process,
 talks to providers directly over their native APIs, and handles the
 operational work — fallback chains, retries, key-pool rotation, rate limits,
@@ -16,7 +16,7 @@ process.
        │  complete() · stream() · embed() · raw()
        ▼
 ┌──────────────────────────────────────────────────┐
-│                   ai-router                      │
+│                 ai-router-sdk                    │
 │                                                  │
 │   guardrails → cache → strategy selection        │
 │        → rate limit / budget → circuit breaker   │
@@ -69,7 +69,7 @@ model: "fast"     // not "gpt-4o-mini"
 model: "smart"    // not "claude-sonnet-4-..."
 ```
 
-ai-router decides which provider and model actually serve that route, walking
+ai-router-sdk decides which provider and model actually serve that route, walking
 the configured chain until one works. This keeps concerns separated:
 
 - Provider changes don't require application changes — edit config, not code.
@@ -80,9 +80,6 @@ the configured chain until one works. This keeps concerns separated:
 The `model` field is always a route id. It is never a raw provider model name.
 
 ## Quick start
-
-> Not yet on npm (see [Status](#status)); install from a git ref or local
-> path until the first release.
 
 ```bash
 npm install @ai-router-sdk/core
@@ -132,7 +129,7 @@ provider. That adds a network hop, an operator, a bill, and a third party
 terminating your credentials. Many applications don't need any of that — they
 need the *logic* of a gateway embedded in the app.
 
-| | Hosted gateway | Proxy server (LiteLLM) | ai-router |
+| | Hosted gateway | Proxy server (LiteLLM) | ai-router-sdk |
 | --- | --- | --- | --- |
 | Runs | Vendor's cloud | A service you operate | In your process |
 | Extra network hop | Yes | Yes | None |
@@ -141,10 +138,10 @@ need the *logic* of a gateway embedded in the app.
 | Language | Any (HTTP) | Python-centric | TypeScript-native |
 | Shared state across replicas | Built in | Built in | Optional (`@ai-router-sdk/redis`) |
 
-Choose ai-router when routing behavior should live in your TypeScript
+Choose ai-router-sdk when routing behavior should live in your TypeScript
 codebase rather than in another piece of infrastructure to run. Choose a
 hosted gateway when many heterogeneous applications need one shared control
-plane — the two approaches also compose: ai-router can route to a gateway as
+plane — the two approaches also compose: ai-router-sdk can route to a gateway as
 just another OpenAI-compatible provider.
 
 ## Routing strategies
