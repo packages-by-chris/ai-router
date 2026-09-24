@@ -34,13 +34,13 @@ jobs:
           npm run conformance
           npm run typecheck
 
-      - name: Publish @ai-router/core to npm
-        run: npm publish --workspace @ai-router/core --access public --provenance
+      - name: Publish @ai-router-sdk/core to npm
+        run: npm publish --workspace @ai-router-sdk/core --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 
-      - name: Publish @ai-router/redis to npm
-        run: npm publish --workspace @ai-router/redis --access public --provenance
+      - name: Publish @ai-router-sdk/redis to npm
+        run: npm publish --workspace @ai-router-sdk/redis --access public --provenance
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
 

@@ -140,7 +140,7 @@ quota and returns candidates with reasons, estimated cost, observed latency
 Everything the engine learns at runtime (latency EMAs, health percentiles,
 key cooldowns, circuit breakers, outcome memory) is **in-process**. Only the
 rate-limit/budget counters go through the pluggable store; inject
-`@ai-router/redis` for shared state across replicas. In-process signals are
+`@ai-router-sdk/redis` for shared state across replicas. In-process signals are
 per-instance by design — correct for single-process serverless/edge
 deployments, advisory for multi-replica ones.
 

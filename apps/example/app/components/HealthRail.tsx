@@ -1,6 +1,6 @@
 "use client";
 
-import type { OutcomeStats, RouteHealthSnapshot } from "@ai-router/core";
+import type { OutcomeStats, RouteHealthSnapshot } from "@ai-router-sdk/core";
 
 function bar(pct: number): string {
   const filled = Math.max(0, Math.min(20, Math.round(pct * 20)));

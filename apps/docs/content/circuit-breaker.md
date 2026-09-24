@@ -12,7 +12,7 @@ Automatically skip routes that are failing repeatedly. Prevents wasted calls to 
 Pass `circuitBreaker` in `EngineOptions`:
 
 ```ts
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter(config, {
   circuitBreaker: {

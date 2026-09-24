@@ -1,6 +1,6 @@
-# @ai-router/redis
+# @ai-router-sdk/redis
 
-Redis-backed `RateLimitStore` for `@ai-router/core`. One shared counter
+Redis-backed `RateLimitStore` for `@ai-router-sdk/core`. One shared counter
 across all replicas of your app — the fix for per-process limiters
 silently multiplying by replica count.
 
@@ -9,8 +9,8 @@ No hard dependencies: bring your own Redis client.
 ## Usage
 
 ```ts
-import { AIRouter } from "@ai-router/core";
-import { RedisStore, ioredisClient } from "@ai-router/redis";
+import { AIRouter } from "@ai-router-sdk/core";
+import { RedisStore, ioredisClient } from "@ai-router-sdk/redis";
 import Redis from "ioredis";
 
 const redis = new Redis(process.env.REDIS_URL);
@@ -26,7 +26,7 @@ const router = new AIRouter(config, {
 node-redis v4+:
 
 ```ts
-import { nodeRedisClient } from "@ai-router/redis";
+import { nodeRedisClient } from "@ai-router-sdk/redis";
 import { createClient } from "redis";
 
 const store = new RedisStore({ client: nodeRedisClient(client) });

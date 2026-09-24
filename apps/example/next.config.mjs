@@ -1,9 +1,9 @@
 /** @type {import('next').NextConfig} */
 const nextConfig = {
-  // The example consumes @ai-router/core's TypeScript source directly via the
+  // The example consumes @ai-router-sdk/core's TypeScript source directly via the
   // workspace (see tsconfig paths) — Next compiles it for us. Apps installing
   // the published package don't need this line.
-  transpilePackages: ["@ai-router/core"],
+  transpilePackages: ["@ai-router-sdk/core"],
   cacheComponents: true,
   webpack: (config) => {
     // The core's source imports use NodeNext-style ".js" specifiers

@@ -12,7 +12,7 @@ Validation hooks that run around every call. An input guard can veto or rewrite 
 Pass `guardrails` in `EngineOptions` (second argument to `AIRouter`):
 
 ```ts
-import { AIRouter, type InputGuardrail } from "@ai-router/core";
+import { AIRouter, type InputGuardrail } from "@ai-router-sdk/core";
 
 const redactKeys: InputGuardrail = {
   name: "redact-api-keys",
@@ -67,7 +67,7 @@ A guard's `check` returns (or resolves to) a verdict:
 ## Error surface
 
 ```ts
-import { GuardrailBlockedError } from "@ai-router/core";
+import { GuardrailBlockedError } from "@ai-router-sdk/core";
 
 try {
   await router.complete({ model: "fast", messages });

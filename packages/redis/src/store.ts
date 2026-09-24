@@ -1,5 +1,5 @@
 /**
- * Redis-backed RateLimitStore for @ai-router/core.
+ * Redis-backed RateLimitStore for @ai-router-sdk/core.
  *
  * Sliding-window log per key, stored as a ZSET:
  *   member = "<nowMs>:<seq>:<rand>:<cost>"   (cost anchored last)
@@ -13,7 +13,7 @@
  * `RedisEvalClient` surface for anything else (Upstash, cluster wrappers).
  */
 
-import type { RateLimitDecision, RateLimitStore } from "@ai-router/core";
+import type { RateLimitDecision, RateLimitStore } from "@ai-router-sdk/core";
 
 /** Minimal client surface: EVAL with keys/args split. */
 export interface RedisEvalClient {

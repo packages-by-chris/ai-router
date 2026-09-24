@@ -2,7 +2,7 @@
  * Shared wire DTOs between the API routes and the browser UI.
  * Types-only module — safe to import from client components.
  */
-import type { AttemptEvent, RoutingExplanation, RouterStats } from "@ai-router/core";
+import type { AttemptEvent, RoutingExplanation, RouterStats } from "@ai-router-sdk/core";
 
 export type { AttemptEvent, RoutingExplanation, RouterStats };
 

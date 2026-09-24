@@ -2,7 +2,7 @@
   "$schema": "http://json-schema.org/draft-07/schema#",
   "$id": "https://raw.githubusercontent.com/Packages-by-Chris/ai-router/main/packages/core/schema/router-config.schema.json",
   "title": "RouterConfig",
-  "description": "JSON-serializable configuration for @ai-router/core. The Python SDK validates against this same schema.",
+  "description": "JSON-serializable configuration for @ai-router-sdk/core. The Python SDK validates against this same schema.",
   "type": "object",
   "required": [
     "routes"

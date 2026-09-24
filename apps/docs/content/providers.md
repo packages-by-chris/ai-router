@@ -177,7 +177,7 @@ gating).
 Register a third-party adapter under any id, then use it like a built-in:
 
 ```ts
-import { registerAdapter, knownProviderIds } from "@ai-router/core";
+import { registerAdapter, knownProviderIds } from "@ai-router-sdk/core";
 
 registerAdapter("my-gateway", () => new MyGatewayAdapter());
 // knownProviderIds() now includes "my-gateway"; configs may declare it.

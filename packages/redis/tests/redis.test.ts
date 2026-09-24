@@ -1,5 +1,5 @@
 import { describe, expect, test } from "vitest";
-import { MemoryStore } from "@ai-router/core";
+import { MemoryStore } from "@ai-router-sdk/core";
 import {
   RedisStore,
   RECORD_SCRIPT,

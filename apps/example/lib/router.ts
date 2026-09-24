@@ -6,7 +6,7 @@ import {
   type ModelRoute,
   type RouterConfig,
   type RoutingStrategy,
-} from "@ai-router/core";
+} from "@ai-router-sdk/core";
 
 /**
  * Router state for the demo.

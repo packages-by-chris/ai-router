@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.1.0, initial release. Both TypeScript (`@ai-router/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
+**Status:** v0.1.0, initial release. Both TypeScript (`@ai-router-sdk/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
 
 ## What you get
 
@@ -85,11 +85,11 @@ The `model` field is always a route id. It is never a raw provider model name.
 > path until the first release.
 
 ```bash
-npm install @ai-router/core
+npm install @ai-router-sdk/core
 ```
 
 ```ts
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter({
   routes: [
@@ -139,7 +139,7 @@ need the *logic* of a gateway embedded in the app.
 | Provider keys | Often theirs / proxied | Yours, stored server-side | Yours, never leave the app |
 | Failure domain | Vendor + your app | Proxy + your app | Your app only |
 | Language | Any (HTTP) | Python-centric | TypeScript-native |
-| Shared state across replicas | Built in | Built in | Optional (`@ai-router/redis`) |
+| Shared state across replicas | Built in | Built in | Optional (`@ai-router-sdk/redis`) |
 
 Choose ai-router when routing behavior should live in your TypeScript
 codebase rather than in another piece of infrastructure to run. Choose a
@@ -434,7 +434,7 @@ adapter implementing `ProviderAdapter` (`complete`, `stream`, `raw`, optional
 `embed`). Registered ids become valid `provider` values in configs.
 
 ```ts
-import { registerAdapter } from "@ai-router/core";
+import { registerAdapter } from "@ai-router-sdk/core";
 
 registerAdapter("my-gateway", () => new MyGatewayAdapter());
 // config: { id: "gw", provider: "my-gateway", model: "...", apiKey: "..." }
@@ -442,7 +442,7 @@ registerAdapter("my-gateway", () => new MyGatewayAdapter());
 
 **Conformance kit.** Pure translation functions can be tested against the
 same JSON fixtures the built-in adapters use — `runTranslationCases`,
-`stableJson`, and related types are exported from `@ai-router/core`.
+`stableJson`, and related types are exported from `@ai-router-sdk/core`.
 
 **Pluggable state.** `RateLimitStore` (four-method surface: `take`,
 `record`, optional `used`, optional `snapshot`) and the response cache are
@@ -468,7 +468,7 @@ observability never breaks routing.
   collects chunks.
 
 ```ts
-import { streamText } from "@ai-router/core";
+import { streamText } from "@ai-router-sdk/core";
 const text = await streamText(router.stream({ model: "fast", messages }));
 ```
 
@@ -479,8 +479,8 @@ With multiple replicas each process counts independently — 3 pods ×
 `rpm: 60` is effectively 180 rpm. Inject a shared store to fix it:
 
 ```ts
-import { AIRouter } from "@ai-router/core";
-import { RedisStore, ioredisClient } from "@ai-router/redis";
+import { AIRouter } from "@ai-router-sdk/core";
+import { RedisStore, ioredisClient } from "@ai-router-sdk/redis";
 import Redis from "ioredis";
 
 const router = new AIRouter(config, {
@@ -488,13 +488,13 @@ const router = new AIRouter(config, {
 });
 ```
 
-[`@ai-router/redis`](packages/redis/) implements the same sliding-window
+[`@ai-router-sdk/redis`](packages/redis/) implements the same sliding-window
 semantics atomically via Lua (ZSET-backed), works with ioredis, node-redis,
 or any client exposing EVAL, has no hard dependency on either, and fails
 open by default when Redis is unreachable.
 
 What can stay in-process: nothing that needs to learn. Inject a
-`stateStore` (e.g. `RedisStateStore` from `@ai-router/redis`) to persist and
+`stateStore` (e.g. `RedisStateStore` from `@ai-router-sdk/redis`) to persist and
 share health stats, outcome memory, and circuit-breaker state across
 restarts and replicas — snapshots are last-writer-wins with TTLs, which is
 the right trade-off for telemetry-grade routing state. Rate limiting and
@@ -514,7 +514,7 @@ npm run bench        # routing-overhead microbenchmark (offline, mock fetch)
 Run a single package or file:
 
 ```bash
-npm test -w @ai-router/core
+npm test -w @ai-router-sdk/core
 npx vitest run packages/core/tests/engine.test.ts
 ```
 
@@ -609,7 +609,7 @@ application-recorded quality as adaptive signals.
   call summaries with TTFB
 - Committed streaming, embeddings, multimodal content, tool calling,
   structured output, reasoning surfaces, `raw()` escape hatch
-- `@ai-router/redis` shared rate-limit store & state store
+- `@ai-router-sdk/redis` shared rate-limit store & state store
 - Python SDK (`ai-router`) with full sync & async APIs and 1:1 parity with TypeScript
 - Cross-SDK conformance fixture suite (request/response/chunk/SSE)
 - GitHub Actions CI matrix testing across Node.js (20, 22) and Python (3.10-3.13)
@@ -631,8 +631,8 @@ pushing.
 Repository layout:
 
 ```
-packages/core/    @ai-router/core — the library
-packages/redis/   @ai-router/redis — shared RateLimitStore
+packages/core/    @ai-router-sdk/core — the library
+packages/redis/   @ai-router-sdk/redis — shared RateLimitStore
 apps/example/     Next.js chat demo (env-driven fallback chain)
 apps/docs/        Documentation site
 scripts/smoke.ts  Live provider smoke test

@@ -1,7 +1,7 @@
 {
-  "name": "@ai-router/redis",
+  "name": "@ai-router-sdk/redis",
   "version": "0.1.0",
-  "description": "Redis-backed RateLimitStore for @ai-router/core — shared rate-limit state across replicas. No hard dependencies: bring your own ioredis/node-redis client.",
+  "description": "Redis-backed RateLimitStore for @ai-router-sdk/core — shared rate-limit state across replicas. No hard dependencies: bring your own ioredis/node-redis client.",
   "type": "module",
   "main": "./dist/index.js",
   "types": "./dist/index.d.ts",
@@ -22,8 +22,23 @@
     "build": "tsc -p tsconfig.json",
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit"
   },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Packages-by-Chris/ai-router.git",
+    "directory": "packages/redis"
+  },
+  "homepage": "https://github.com/Packages-by-Chris/ai-router#readme",
+  "bugs": "https://github.com/Packages-by-Chris/ai-router/issues",
+  "keywords": [
+    "ai",
+    "router",
+    "redis",
+    "rate-limiting",
+    "distributed"
+  ],
   "dependencies": {
-    "@ai-router/core": "*"
+    "@ai-router-sdk/core": "^0.1.0"
   },
   "devDependencies": {
     "typescript": "^5.5.0"

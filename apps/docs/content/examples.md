@@ -10,7 +10,7 @@ description: Copy-paste recipes — fallback chains, key pools, Redis stores, st
 Three providers behind one logical model. Order = preference:
 
 ```ts
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter({
   routes: [
@@ -70,8 +70,8 @@ repo's Next.js traffic console.
 ## Multi-replica budget with Redis
 
 ```ts
-import { AIRouter } from "@ai-router/core";
-import { RedisStore, ioredisClient } from "@ai-router/redis";
+import { AIRouter } from "@ai-router-sdk/core";
+import { RedisStore, ioredisClient } from "@ai-router-sdk/redis";
 import Redis from "ioredis";
 
 const router = new AIRouter(config, {

@@ -65,7 +65,7 @@ export default function RootLayout({ children }: { children: ReactNode }) {
             <a
               href={EXAMPLE_URL}
               className="nav-demo"
-              title="Open the traffic console (npm run dev -w @ai-router/example)"
+              title="Open the traffic console (npm run dev -w @ai-router-sdk/example)"
             >
               Live demo ↗
             </a>

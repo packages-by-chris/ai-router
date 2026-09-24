@@ -26,7 +26,7 @@ export const PROVIDERS = [
   "anthropic",
   "gemini",
   "openai-compatible",
-  // preset catalog picks — full list in @ai-router/core PROVIDER_PRESETS
+  // preset catalog picks — full list in @ai-router-sdk/core PROVIDER_PRESETS
   "groq",
   "deepseek",
   "openrouter",

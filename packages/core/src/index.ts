@@ -1,4 +1,4 @@
-// Public surface of @ai-router/core.
+// Public surface of @ai-router-sdk/core.
 
 export { AIRouter, type AIRouterOptions } from "./router.js";
 export { RoutingEngine, estimateTokens, computeCost } from "./engine.js";

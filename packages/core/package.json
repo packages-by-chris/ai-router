@@ -1,5 +1,5 @@
 {
-  "name": "@ai-router/core",
+  "name": "@ai-router-sdk/core",
   "version": "0.1.0",
   "description": "Provider-agnostic AI routing core: fallback chains, key pools, rate limiting, unified streaming. Zero runtime dependencies.",
   "type": "module",
@@ -24,6 +24,27 @@
     "typecheck": "tsc -p tsconfig.json --noEmit && tsc -p tsconfig.tests.json --noEmit",
     "conformance": "tsx conformance/run.ts"
   },
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/Packages-by-Chris/ai-router.git",
+    "directory": "packages/core"
+  },
+  "homepage": "https://github.com/Packages-by-Chris/ai-router#readme",
+  "bugs": "https://github.com/Packages-by-Chris/ai-router/issues",
+  "keywords": [
+    "ai",
+    "router",
+    "llm",
+    "openai",
+    "anthropic",
+    "gemini",
+    "bedrock",
+    "vertex",
+    "streaming",
+    "fallback",
+    "rate-limiting"
+  ],
   "devDependencies": {
     "typescript": "^5.5.0"
   }

@@ -16,8 +16,8 @@ npm run build        # turbo build
 ## Repo layout
 
 ```
-packages/core/   @ai-router/core — the library (zero runtime deps)
-packages/redis/  @ai-router/redis — Redis RateLimitStore adapter
+packages/core/   @ai-router-sdk/core — the library (zero runtime deps)
+packages/redis/  @ai-router-sdk/redis — Redis RateLimitStore adapter
 apps/example/    Next.js chat demo
 apps/docs/       docs site
 ```

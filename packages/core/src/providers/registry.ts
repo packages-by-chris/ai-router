@@ -36,7 +36,7 @@ const customAdapters = new Map<string, ProviderAdapter>();
  * routes may declare `provider: "<id>"` and `parseConfig` accepts the id
  * (the known-provider union includes it). Call at module init time:
  *
- *   // @ai-router/provider-bedrock
+ *   // @ai-router-sdk/provider-bedrock
  *   registerAdapter("bedrock", () => new BedrockAdapter());
  */
 export function registerAdapter(

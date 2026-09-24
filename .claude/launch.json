@@ -4,7 +4,7 @@
     {
       "name": "docs",
       "runtimeExecutable": "npm",
-      "runtimeArgs": ["run", "dev", "-w", "@ai-router/docs"],
+      "runtimeArgs": ["run", "dev", "-w", "@ai-router-sdk/docs"],
       "port": 3000,
       "autoPort": true
     },

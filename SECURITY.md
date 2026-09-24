@@ -53,7 +53,7 @@ library cannot prevent this; it is your architecture decision:
 
 ## Redis adapter
 
-`@ai-router/redis` stores rate-limit/budget counters as ZSET entries under a
+`@ai-router-sdk/redis` stores rate-limit/budget counters as ZSET entries under a
 namespaced prefix (`ai-router:` by default) with TTLs. It stores no
 credentials and executes only fixed Lua scripts (no dynamic script bodies
 from user input). Use a TLS-connected, authenticated Redis instance; the
@@ -72,7 +72,7 @@ adapter never disables auth.
 
 ## Dependency posture
 
-Zero runtime dependencies in `@ai-router/core`; `@ai-router/redis` also has
+Zero runtime dependencies in `@ai-router-sdk/core`; `@ai-router-sdk/redis` also has
 none (bring-your-own client, adapted at the call boundary). Supply-chain
 surface = devDependencies + your own lockfile. Run `npm audit` in CI.
 

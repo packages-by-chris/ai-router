@@ -21,7 +21,7 @@ Plus `middleware.beforeRequest/afterResponse` for per-HTTP-attempt hooks and
 Set at the engine level, per call, or both (both fire; per-call first):
 
 ```ts
-import { AIRouter, type LogEvent } from "@ai-router/core";
+import { AIRouter, type LogEvent } from "@ai-router-sdk/core";
 
 const router = new AIRouter(config, {
   onLog: (event: LogEvent) => {

@@ -41,7 +41,7 @@ describe("RedisStateStore", () => {
   });
 
   test("end-to-end with RoutingEngine stateStore option", async () => {
-    const { RoutingEngine, parseConfig } = await import("@ai-router/core");
+    const { RoutingEngine, parseConfig } = await import("@ai-router-sdk/core");
     const client = new FakeStateRedis();
     const store = new RedisStateStore({ client });
     const cfg = parseConfig({

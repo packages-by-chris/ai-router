@@ -13,7 +13,7 @@ Pass raw unvalidated input (a JSON file, a POST body) straight to the
 constructor — it is parsed and validated for you:
 
 ```ts
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter(configJson); // throws ConfigError if invalid
 ```
@@ -130,7 +130,7 @@ By default, variables resolve against `process.env`. Pass an explicit env map
 as the second argument:
 
 ```ts
-import { parseConfig } from "@ai-router/core";
+import { parseConfig } from "@ai-router-sdk/core";
 
 const config = parseConfig(jsonInput, {
   OPENAI_API_KEY: "sk-...",

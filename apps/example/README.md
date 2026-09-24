@@ -11,7 +11,7 @@ happens, alongside the streamed answer.
 # from the repo root — installs workspace deps
 npm install
 
-npm run dev --workspace @ai-router/example  # or: npm run dev -w @ai-router/docs for the docs site
+npm run dev --workspace @ai-router-sdk/example  # or: npm run dev -w @ai-router-sdk/docs for the docs site
 # http://localhost:3000
 ```
 
@@ -55,9 +55,9 @@ npm run dev --workspace @ai-router/example  # or: npm run dev -w @ai-router/docs
 
 ## Notes
 
-- The example imports `@ai-router/core`'s TypeScript source via tsconfig
+- The example imports `@ai-router-sdk/core`'s TypeScript source via tsconfig
   `paths` + `transpilePackages` (no build step). Apps installing the
-  published package just `npm install @ai-router/core` — no config needed.
+  published package just `npm install @ai-router-sdk/core` — no config needed.
 - `runtime = "nodejs"` is set on the route, but `edge` works too — the core
   uses only `fetch` + WebStreams.
 - Keys posted from the browser transit your server — fine for a local demo

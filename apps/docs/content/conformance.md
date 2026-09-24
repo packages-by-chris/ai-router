@@ -36,12 +36,12 @@ fails before consumers do.
 
 ## Third-party adapters
 
-The runner core is exported from `@ai-router/core` so external adapters
+The runner core is exported from `@ai-router-sdk/core` so external adapters
 (registered via [`registerAdapter`](/docs/providers)) can prove translation
 parity with the same fixture format:
 
 ```ts
-import { runTranslationCases, type TranslationHandlers } from "@ai-router/core";
+import { runTranslationCases, type TranslationHandlers } from "@ai-router-sdk/core";
 
 const handlers: TranslationHandlers = {
   bedrock_request: ({ request, providerModel }) => myTranslate(request!, providerModel),

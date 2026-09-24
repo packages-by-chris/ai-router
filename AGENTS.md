@@ -5,9 +5,9 @@
 Turborepo monorepo. npm workspaces.
 
 ```
-packages/core/   → @ai-router/core — the TypeScript library (zero runtime deps)
+packages/core/   → @ai-router-sdk/core — the TypeScript library (zero runtime deps)
 packages/python/ → ai-router — the Python SDK (Python 3.10+, zero runtime deps)
-packages/redis/  → @ai-router/redis — Redis RateLimitStore adapter
+packages/redis/  → @ai-router-sdk/redis — Redis RateLimitStore adapter
 apps/example/    → Next.js chat UI (demo)
 apps/docs/       → Next.js docs site
 scripts/smoke.ts → live provider smoke test (TypeScript)
@@ -34,7 +34,7 @@ npm run typecheck:python   # mypy strict, packages/python/src
 npm run smoke:python       # live API test — needs provider env vars
 ```
 
-Run single package test: `npm test -w @ai-router/core`
+Run single package test: `npm test -w @ai-router-sdk/core`
 Run single file: `npx vitest run packages/core/tests/config.test.ts`
 
 Order matters: `build → typecheck` (turbo dep). Tests don't depend on build.

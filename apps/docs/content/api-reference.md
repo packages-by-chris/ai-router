@@ -1,11 +1,11 @@
 ---
 title: API reference
-description: The complete public surface of @ai-router/core and @ai-router/redis.
+description: The complete public surface of @ai-router-sdk/core and @ai-router-sdk/redis.
 ---
 
 # API reference
 
-Public surface of `@ai-router/core` — everything below is exported from the
+Public surface of `@ai-router-sdk/core` — everything below is exported from the
 package root.
 
 ## AIRouter
@@ -213,7 +213,7 @@ Exported per provider for testing/custom pipelines:
 - Gemini: `GeminiAdapter`, `GEMINI_DEFAULT_BASE_URL`, `GEMINI_THINKING_BUDGETS`, `translateGeminiRequest`, `translateGeminiResponse`, `mapGeminiFinishReason`
 - Registry: `getAdapter`, `isSupported`, `registerAdapter`, `knownProviderIds`; adapter types `ProviderAdapter`, `NormalizedRoute`, `AdapterContext`, `RawRequestOptions`
 
-## @ai-router/redis
+## @ai-router-sdk/redis
 
 | Export | Kind |
 | --- | --- |

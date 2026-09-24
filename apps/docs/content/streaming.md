@@ -74,7 +74,7 @@ Two helper functions collect stream output without manual iteration:
 Collects all content chunks into a single string:
 
 ```ts
-import { streamText } from "@ai-router/core";
+import { streamText } from "@ai-router-sdk/core";
 
 const stream = await router.stream({ model: "fast", messages: [...] });
 const text = await streamText(stream);
@@ -89,7 +89,7 @@ Collects all chunks into an array. Useful when you need the full chunk history
 (e.g., for tool call accumulation, usage tracking, or debugging):
 
 ```ts
-import { collectStream } from "@ai-router/core";
+import { collectStream } from "@ai-router-sdk/core";
 
 const stream = await router.stream({ model: "fast", messages: [...] });
 const chunks = await collectStream(stream);

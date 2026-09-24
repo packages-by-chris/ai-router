@@ -12,7 +12,7 @@ Per-attempt lifecycle hooks. Fire before and after every adapter call — useful
 Pass `middleware` in `EngineOptions` (second argument to `AIRouter`):
 
 ```ts
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter(config, {
   middleware: {

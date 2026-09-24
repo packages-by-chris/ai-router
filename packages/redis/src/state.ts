@@ -1,5 +1,5 @@
 /**
- * Redis-backed RouterStateStore for @ai-router/core.
+ * Redis-backed RouterStateStore for @ai-router-sdk/core.
  *
  * Persists the engine's learned routing state (health stats, outcome memory,
  * circuit breakers) as a single JSON snapshot under one key with a TTL.
@@ -12,7 +12,7 @@
  * client exposing EVAL with `ioredisClient()` / `nodeRedisClient()`.
  */
 
-import type { RouterStateStore } from "@ai-router/core";
+import type { RouterStateStore } from "@ai-router-sdk/core";
 import type { RedisEvalClient } from "./store.js";
 
 export const STATE_GET_SCRIPT = `

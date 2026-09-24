@@ -16,7 +16,7 @@ changes only where the old behavior was a bug (see Fixed).
   debounced after mutations; corrupt snapshots start fresh, store failures
   never break routing. Last-writer-wins semantics — telemetry-grade sharing,
   not linearizable counters (use `RateLimitStore` for limits/budgets).
-- `@ai-router/redis` ships `RedisStateStore` (same bring-your-own-client
+- `@ai-router-sdk/redis` ships `RedisStateStore` (same bring-your-own-client
   EVAL pattern as `RedisStore`) implementing `RouterStateStore`.
 
 ### Added — staleness controls (P0)
@@ -50,7 +50,7 @@ changes only where the old behavior was a bug (see Fixed).
   (`shrinkLatencies`, k=3); when nothing is well-sampled, raw values pass.
 - Timeout share penalizes the reliability component (decayed timeout-weight
   / failure-weight).
-- `wilsonLowerBound()` exported from `@ai-router/core`.
+- `wilsonLowerBound()` exported from `@ai-router-sdk/core`.
 
 ### Added — exploration (P1, opt-in)
 

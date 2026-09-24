@@ -5,7 +5,7 @@ description: What ai-router is, why it exists, and how to install it.
 
 # Introduction
 
-`@ai-router/core` is a provider-agnostic AI routing layer. You describe your
+`@ai-router-sdk/core` is a provider-agnostic AI routing layer. You describe your
 provider routes once — in order of preference — and every request walks that
 chain automatically: retrying transient failures, rotating API keys when a pool
 is throttled, and falling back to the next provider when a route is exhausted.
@@ -29,8 +29,8 @@ providers and owns the boring parts:
 ## Install
 
 ```sh
-npm install @ai-router/core          # routing core
-npm install @ai-router/redis         # optional: shared rate-limit state
+npm install @ai-router-sdk/core          # routing core
+npm install @ai-router-sdk/redis         # optional: shared rate-limit state
 ```
 
 Zero runtime dependencies. Node 18+, Bun, Deno, and edge runtimes are
@@ -39,7 +39,7 @@ supported — the core uses only `fetch` and WebStreams.
 ## Quickstart
 
 ```ts
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter({
   routes: [

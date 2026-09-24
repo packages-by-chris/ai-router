@@ -41,12 +41,12 @@ const FEATURES = [
   },
   {
     title: "Zero runtime deps, anywhere",
-    body: "Pure TypeScript over fetch + WebStreams. Node 18+, Bun, Deno, edge runtimes — if it speaks fetch, it runs @ai-router/core.",
+    body: "Pure TypeScript over fetch + WebStreams. Node 18+, Bun, Deno, edge runtimes — if it speaks fetch, it runs @ai-router-sdk/core.",
     href: "/docs/introduction",
   },
 ];
 
-const QUICKSTART = `import { AIRouter } from "@ai-router/core";
+const QUICKSTART = `import { AIRouter } from "@ai-router-sdk/core";
 
 const router = new AIRouter({
   routes: [
@@ -117,7 +117,7 @@ export default function HomePage() {
             </Link>
           </div>
           <div className="install-pill">
-            <code>npm install @ai-router/core</code>
+            <code>npm install @ai-router-sdk/core</code>
           </div>
         </div>
 

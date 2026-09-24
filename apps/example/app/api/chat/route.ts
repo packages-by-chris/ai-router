@@ -1,5 +1,5 @@
 import type { ChatFrame } from "@/lib/protocol";
-import type { ChatMessage, Role } from "@ai-router/core";
+import type { ChatMessage, Role } from "@ai-router-sdk/core";
 import { getPrimary, getRouter } from "@/lib/router";
 
 /** Demo knob: override with DEMO_MAX_TOKENS env var. */

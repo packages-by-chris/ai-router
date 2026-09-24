@@ -55,18 +55,18 @@ interface RateLimitStore {
 The default is `MemoryStore`: exact in-process sliding windows, zero setup.
 Correct for a single replica — but N replicas undercount by a factor of N.
 
-## Multi-replica: @ai-router/redis
+## Multi-replica: @ai-router-sdk/redis
 
-[`@ai-router/redis`](https://www.npmjs.com/package/@ai-router/redis) keeps
+[`@ai-router-sdk/redis`](https://www.npmjs.com/package/@ai-router-sdk/redis) keeps
 shared state in Redis so all replicas gate against one budget:
 
 ```sh
-npm install @ai-router/redis ioredis
+npm install @ai-router-sdk/redis ioredis
 ```
 
 ```ts
-import { AIRouter } from "@ai-router/core";
-import { RedisStore, ioredisClient } from "@ai-router/redis";
+import { AIRouter } from "@ai-router-sdk/core";
+import { RedisStore, ioredisClient } from "@ai-router-sdk/redis";
 import Redis from "ioredis";
 
 const router = new AIRouter(config, {

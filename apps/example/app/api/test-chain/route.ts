@@ -1,4 +1,4 @@
-import { AIRouter } from "@ai-router/core";
+import { AIRouter } from "@ai-router-sdk/core";
 import type { TestResult } from "@/lib/protocol";
 import { getRoutes } from "@/lib/router";
 

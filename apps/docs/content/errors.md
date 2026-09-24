@@ -49,7 +49,7 @@ All extend `AIRouterError`.
 ## Catching patterns
 
 ```ts
-import { AllRoutesFailedError, RateLimitedError } from "@ai-router/core";
+import { AllRoutesFailedError, RateLimitedError } from "@ai-router-sdk/core";
 
 try {
   await router.complete(req);
