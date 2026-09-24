@@ -187,10 +187,14 @@ describe("strategy: quality-first", () => {
       { id: "a", provider: "openai", model: "ma", apiKey: "ka", maxRetries: 0 },
       { id: "b", provider: "openai-compatible", baseUrl: "https://q.test/v1", model: "mb", apiKey: "kb", maxRetries: 0 },
     ]});
-    const engine = new RoutingEngine(config, { sleep: noopSleep, fetchImpl: recorder(urls) });
+    const recordingOk: FetchLike = async (url) => {
+      urls.push(url);
+      return jsonResponse(200, completionJson());
+    };
+    const engine = new RoutingEngine(config, { sleep: noopSleep, fetchImpl: recordingOk });
 
     // No outcome data yet: neutral scores tie -> config order (a first).
-    await engine.complete(req).catch(() => {});
+    await engine.complete(req);
     expect(urls[0]).toContain("api.openai.com");
 
     // a excellent at "summarize"; b poor.
@@ -199,7 +203,7 @@ describe("strategy: quality-first", () => {
       engine.recordOutcome({ routeId: "b", task: "summarize", quality: 0, success: true });
     }
     urls.length = 0;
-    await engine.complete(req, { routing: { task: "summarize" } }).catch(() => {});
+    await engine.complete(req, { routing: { task: "summarize" } });
     expect(urls[0]).toContain("api.openai.com"); // still a
 
     // Flip: b better than a for this task -> traffic flips.
@@ -208,12 +212,12 @@ describe("strategy: quality-first", () => {
       engine.recordOutcome({ routeId: "b", task: "summarize", quality: 1, success: true });
     }
     urls.length = 0;
-    await engine.complete(req, { routing: { task: "summarize" } }).catch(() => {});
+    await engine.complete(req, { routing: { task: "summarize" } });
     expect(urls[0]).toContain("q.test");
 
     // Untasked bucket has no data -> back to neutral config order.
     urls.length = 0;
-    await engine.complete(req).catch(() => {});
+    await engine.complete(req);
     expect(urls[0]).toContain("api.openai.com");
   });
 
