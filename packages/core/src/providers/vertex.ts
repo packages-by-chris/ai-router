@@ -97,14 +97,14 @@ async function signServiceAccountJwt(key: ServiceAccountKey): Promise<string> {
       exp: now + 3600,
     }),
   );
-  const cryptoKey = await crypto.subtle.importKey(
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
     "pkcs8",
     pemToDer(key.private_key).slice().buffer as ArrayBuffer,
     { name: "RSASSA-PKCS1-v1_5", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const sig = await crypto.subtle.sign(
+  const sig = await globalThis.crypto.subtle.sign(
     "RSASSA-PKCS1-v1_5",
     cryptoKey,
     encoder.encode(`${header}.${claims}`),

@@ -11,40 +11,8 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  packages:
-    name: Packages / Node ${{ matrix.node-version }}
-    runs-on: ubuntu-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: [18.x, 20.x, 22.x]
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-
-      - name: Setup Node.js ${{ matrix.node-version }}
-        uses: actions/setup-node@v4
-        with:
-          node-version: ${{ matrix.node-version }}
-          cache: npm
-
-      - name: Install dependencies
-        run: npm ci
-
-      - name: Build core packages
-        run: npx turbo run build --filter="./packages/*"
-
-      - name: Run unit tests
-        run: npx turbo run test --filter="./packages/*"
-
-      - name: Run cross-SDK conformance tests
-        run: npm run conformance
-
-      - name: Run typecheck
-        run: npx turbo run typecheck --filter="./packages/*"
-
-  apps:
-    name: Apps / Node ${{ matrix.node-version }}
+  typescript:
+    name: TS / Node ${{ matrix.node-version }}
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -63,11 +31,17 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      - name: Build Next.js demo & docs apps
-        run: npx turbo run build --filter="./apps/*"
+      - name: Build packages & apps
+        run: npm run build
 
-      - name: Typecheck Next.js apps
-        run: npx turbo run typecheck --filter="./apps/*"
+      - name: Run unit & feature tests
+        run: npm test
+
+      - name: Run cross-SDK conformance tests
+        run: npm run conformance
+
+      - name: Run typecheck
+        run: npm run typecheck
 
   python:
     name: Python ${{ matrix.python-version }}

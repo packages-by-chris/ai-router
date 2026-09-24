@@ -47,12 +47,12 @@ const normalized = (key = "tok_test"): NormalizedRoute => ({
 // ------------------------------------------------------------- SA JWT flow
 
 async function makeServiceAccountJson(): Promise<string> {
-  const pair = await crypto.subtle.generateKey(
+  const pair = await globalThis.crypto.subtle.generateKey(
     { name: "RSASSA-PKCS1-v1_5", modulusLength: 2048, publicExponent: new Uint8Array([1, 0, 1]), hash: "SHA-256" },
     true,
     ["sign", "verify"],
   );
-  const pkcs8 = await crypto.subtle.exportKey("pkcs8", pair.privateKey);
+  const pkcs8 = await globalThis.crypto.subtle.exportKey("pkcs8", pair.privateKey);
   let b64 = "";
   const bytes = new Uint8Array(pkcs8);
   for (const b of bytes) b64 += String.fromCharCode(b);

@@ -57,7 +57,7 @@ process.
 - **Raw escape hatch** — send anything the unified layer doesn't model straight to the provider.
 
 Under the hood: 6 protocol adapters, 30+ provider presets, zero runtime
-dependencies (`fetch`, WebStreams, and WebCrypto only), Node 18+, Bun, Deno,
+dependencies (`fetch`, WebStreams, and WebCrypto only), Node 20+, Bun, Deno,
 and edge runtimes.
 
 ## Routes, not model names
@@ -539,7 +539,7 @@ OPENAI_API_KEY=sk-... ANTHROPIC_API_KEY=sk-ant-... GEMINI_API_KEY=... \
 
 - **Zero runtime dependencies.** Core ships only compiled TypeScript;
   `fetch`, WebStreams, WebCrypto are assumed from the platform.
-  Node ≥ 18, Bun, Deno, edge runtimes.
+  Node ≥ 20, Bun, Deno, edge runtimes.
 - **No hop.** Requests go from your process to the provider directly.
   Routing overhead is map lookups, ring-buffer math, and a hash for cache
   keys — microbenchmark with a mock fetch shows ~2 µs per request over a
@@ -612,7 +612,7 @@ application-recorded quality as adaptive signals.
 - `@ai-router/redis` shared rate-limit store & state store
 - Python SDK (`ai-router`) with full sync & async APIs and 1:1 parity with TypeScript
 - Cross-SDK conformance fixture suite (request/response/chunk/SSE)
-- GitHub Actions CI matrix testing across Node.js (18, 20, 22) and Python (3.10-3.13)
+- GitHub Actions CI matrix testing across Node.js (20, 22) and Python (3.10-3.13)
 
 **Exploring**
 

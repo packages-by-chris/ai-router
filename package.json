@@ -6,6 +6,9 @@
     "apps/*"
   ],
   "packageManager": "npm@10.9.8",
+  "engines": {
+    "node": ">=20"
+  },
   "scripts": {
     "build": "turbo run build",
     "test": "turbo run test",

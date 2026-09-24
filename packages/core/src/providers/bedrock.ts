@@ -56,7 +56,7 @@ function parseAwsCredentials(key: string): AwsCredentials {
 }
 
 async function sha256Hex(data: Uint8Array<ArrayBuffer>): Promise<string> {
-  const digest = await crypto.subtle.digest("SHA-256", data);
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", data);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
@@ -64,7 +64,7 @@ async function hmac(
   key: Uint8Array<ArrayBuffer>,
   msg: string | Uint8Array<ArrayBuffer>,
 ): Promise<Uint8Array<ArrayBuffer>> {
-  const cryptoKey = await crypto.subtle.importKey(
+  const cryptoKey = await globalThis.crypto.subtle.importKey(
     "raw",
     key,
     { name: "HMAC", hash: "SHA-256" },
@@ -72,7 +72,7 @@ async function hmac(
     ["sign"],
   );
   const data = typeof msg === "string" ? encoder.encode(msg) : msg;
-  const sig = await crypto.subtle.sign("HMAC", cryptoKey, data);
+  const sig = await globalThis.crypto.subtle.sign("HMAC", cryptoKey, data);
   return new Uint8Array(sig);
 }
 

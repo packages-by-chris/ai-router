@@ -2080,7 +2080,11 @@ function totalTries(attempts: AttemptRecord[], winningTries: number): number {
  */
 async function sha256Hex(input: string): Promise<string> {
   const bytes = new TextEncoder().encode(input);
-  const digest = await crypto.subtle.digest("SHA-256", bytes);
+  const subtle = globalThis.crypto?.subtle;
+  if (!subtle) {
+    throw new Error("WebCrypto (globalThis.crypto.subtle) is required for SHA-256 caching");
+  }
+  const digest = await subtle.digest("SHA-256", bytes);
   return [...new Uint8Array(digest)].map((b) => b.toString(16).padStart(2, "0")).join("");
 }
 
