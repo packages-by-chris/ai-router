@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.3.0, pre-release. Both TypeScript (`@ai-router/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
+**Status:** v0.1.0, initial release. Both TypeScript (`@ai-router/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
 
 ## What you get
 

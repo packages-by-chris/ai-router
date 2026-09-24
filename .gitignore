@@ -1,7 +1,15 @@
 node_modules/
 dist/
+**/dist/
 .next/
 *.log
 .DS_Store
 .env
 .turbo/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
