@@ -1,9 +1,9 @@
-/* ── tokens — Supabase-style system (see getdesign.md/supabase/design-md)
- * White canvas, near-black ink, emerald #3ecf8e as the only chromatic event.
- * Display: Inter 500 with negative tracking. Code: system mono on #1c1c1c.
- */
+@import url("https://fonts.googleapis.com/css2?family=IBM+Plex+Mono:wght@400;500&family=IBM+Plex+Sans:wght@400;500;600&family=Sora:wght@400;500;600;700&display=swap");
 
 :root {
+  --font-display: "Sora", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-body: "IBM Plex Sans", -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
   --canvas: #ffffff; /* page */
   --canvas-soft: #fafafa; /* sidebar rail, alternating bands */
   --night: #1c1c1c; /* code blocks */

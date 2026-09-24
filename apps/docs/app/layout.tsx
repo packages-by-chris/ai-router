@@ -1,7 +1,6 @@
 import type { Metadata, Viewport } from "next";
 import type { ReactNode } from "react";
 import Link from "next/link";
-import { Sora, IBM_Plex_Sans, IBM_Plex_Mono } from "next/font/google";
 import {
   SITE_DESCRIPTION,
   SITE_KEYWORDS,
@@ -14,24 +13,6 @@ import "./globals.css";
 /** Example app ("traffic console") — override with NEXT_PUBLIC_EXAMPLE_URL. */
 const EXAMPLE_URL =
   process.env.NEXT_PUBLIC_EXAMPLE_URL ?? "http://localhost:3000";
-
-const display = Sora({
-  subsets: ["latin"],
-  weight: ["400", "500", "600", "700"],
-  variable: "--font-display",
-});
-
-const body = IBM_Plex_Sans({
-  subsets: ["latin"],
-  weight: ["400", "500", "600"],
-  variable: "--font-body",
-});
-
-const mono = IBM_Plex_Mono({
-  subsets: ["latin"],
-  weight: ["400", "500"],
-  variable: "--font-mono",
-});
 
 export const metadata: Metadata = {
   metadataBase: new URL(SITE_URL),
@@ -71,7 +52,7 @@ export const viewport: Viewport = {
 export default function RootLayout({ children }: { children: ReactNode }) {
   return (
     <html lang="en">
-      <body className={`${display.variable} ${body.variable} ${mono.variable}`}>
+      <body>
         <header className="site-header">
           <Link href="/" className="brand">
             ai-router<span className="brand-dot" aria-hidden="true" />
