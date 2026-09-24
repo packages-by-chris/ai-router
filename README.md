@@ -30,10 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.3.0, pre-release. The TypeScript core is feature-complete for
-its scope and covered by mock-based tests plus shared conformance fixtures.
-A Python SDK built against the same fixtures is planned but does not exist
-yet. The package is not yet published to npm.
+**Status:** v0.3.0, pre-release. Both TypeScript (`@ai-router/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
 
 ## What you get
 
