@@ -34,7 +34,14 @@ errors aggregate into one `ConfigError`.
 
 | Option | Default | Purpose |
 | --- | --- | --- |
-| `store?` | `new MemoryStore()` | Rate-limit storage. |
+| `store?` | `new MemoryStore()` | Rate-limit storage ([Rate limiting](/docs/rate-limiting)). |
+| `stateStore?` | — | Redis or persistent state store for learned routing stats & circuit breakers. |
+| `decay?` | `{ halfLifeMs: 1800000, sampleTtlMs: 600000 }` | Decay half-life for outcomes and latency sample TTL. |
+| `explore?` | `{ epsilon: 0, interval: 0 }` | Exploration epsilon and probe interval for adaptive routing. |
+| `evaluators?` | — | Automatic post-completion quality evaluators (`QualityEvaluator[]`). |
+| `autoTask?` | `false` | Automatically infer task category from request features (tools, vision, structured output). |
+| `responseCache?` | — | Exact-match response cache store with TTL. |
+| `guardrails?` | — | Input and output validators/rewriters ([Guardrails](/docs/guardrails)). |
 | `fetchImpl?` | global `fetch` | Inject a mock in tests. |
 | `sleep?` | `setTimeout` wrapper | Backoff injection for tests. |
 | `rng?` | `Math.random` | Backoff jitter source. |
@@ -209,18 +216,25 @@ Exported per provider for testing/custom pipelines:
 
 - OpenAI: `OpenAIAdapter`, `OPENAI_DEFAULT_BASE_URL`, `translateRequest`, `translateResponse`, `translateChunk`, `mergeProviderOptions`, `usageDetails`
 - Azure: `AzureAdapter`, `AZURE_DEFAULT_API_VERSION`
+- Bedrock: `BedrockAdapter`, `awsEventStream`, `sigv4Headers`, `translateBedrockRequest`, `translateBedrockResponse`, `mapBedrockStopReason`
+- Vertex: `VertexAdapter`, `resolveVertexToken`, `clearVertexTokenCache`, `VERTEX_TOKEN_ENDPOINT`
 - Anthropic: `AnthropicAdapter`, `ANTHROPIC_DEFAULT_BASE_URL`, `ANTHROPIC_VERSION` (`2023-06-01`), `ANTHROPIC_DEFAULT_MAX_TOKENS` (4096), `ANTHROPIC_THINKING_BUDGETS`, `translateAnthropicRequest`, `translateAnthropicResponse`, `mapAnthropicFinishReason`
 - Gemini: `GeminiAdapter`, `GEMINI_DEFAULT_BASE_URL`, `GEMINI_THINKING_BUDGETS`, `translateGeminiRequest`, `translateGeminiResponse`, `mapGeminiFinishReason`
-- Registry: `getAdapter`, `isSupported`, `registerAdapter`, `knownProviderIds`; adapter types `ProviderAdapter`, `NormalizedRoute`, `AdapterContext`, `RawRequestOptions`
+- Registry: `getAdapter`, `isSupported`, `registerAdapter`, `knownProviderIds`, `PROVIDER_PRESETS`, `getPreset`; adapter types `ProviderAdapter`, `NormalizedRoute`, `AdapterContext`, `RawRequestOptions`
+
+## Strategy Replay & Offline Analysis
+
+- `replayStrategy(events: ReplayEvent[], options: ReplayOptions): ReplayResult` — evaluate routing strategies offline against historical telemetry.
 
 ## @ai-router-sdk/redis
 
 | Export | Kind |
 | --- | --- |
 | `RedisStore` | `RateLimitStore` over Redis ZSETs, Lua-atomic. Options: `client`, `prefix?`, `failOpen?`, `onError?`, `now?`. |
+| `RedisStateStore` | `RouterStateStore` over Redis JSON snapshots with TTL for sharing routing health, circuit breakers, and quality EMAs across replicas. |
 | `ioredisClient(client)` | Adapt ioredis to `RedisEvalClient`. |
 | `nodeRedisClient(client)` | Adapt node-redis v4+ to `RedisEvalClient`. |
-| `TAKE_SCRIPT`, `RECORD_SCRIPT`, `USED_SCRIPT` | The Lua scripts, exposed for audit/pipelining. `used()` powers budget pre-flight checks. |
+| `TAKE_SCRIPT`, `RECORD_SCRIPT`, `STATE_GET_SCRIPT`, `STATE_SET_SCRIPT` | The Lua scripts, exposed for audit/pipelining. |
 | `RedisEvalClient` | Minimal interface: `eval(script, keys, args)` — implement for Upstash etc. |
 
 Details: [Rate limiting](/docs/rate-limiting).

@@ -3,7 +3,7 @@ requires = ["hatchling"]
 build-backend = "hatchling.build"
 
 [project]
-name = "ai-router"
+name = "ai-router-sdk"
 version = "0.1.0"
 description = "Embeddable LLM routing engine with fallback chains, retries, key rotation, and rate-limit gating"
 readme = "README.md"
@@ -25,6 +25,12 @@ classifiers = [
     "Topic :: Software Development :: Libraries",
 ]
 dependencies = []
+
+[project.urls]
+Homepage = "https://github.com/Packages-by-Chris/ai-router"
+Repository = "https://github.com/Packages-by-Chris/ai-router"
+Issues = "https://github.com/Packages-by-Chris/ai-router/issues"
+Documentation = "https://ai-router.dev"
 
 [project.optional-dependencies]
 dev = [

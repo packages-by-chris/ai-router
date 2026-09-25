@@ -99,11 +99,11 @@ export default function HomePage() {
         <div className="hero">
           <p className="eyebrow">Provider-agnostic AI routing</p>
           <h1 className="hero-title">
-            ai-router<span>.</span>
+            ai-router-sdk<span>.</span>
           </h1>
           <p className="hero-sub">
             Your app deserves better than one API key and a prayer.{" "}
-            <strong>ai-router</strong> fans every request across fallback
+            <strong>ai-router-sdk</strong> fans every request across fallback
             chains, key pools, and rate limits — OpenAI, Anthropic, Gemini, or
             anything OpenAI-compatible — behind one typed client with{" "}
             <em>zero</em> runtime dependencies.

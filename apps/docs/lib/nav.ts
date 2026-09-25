@@ -15,7 +15,7 @@ export interface NavSection {
 export const NAV: NavSection[] = [
   {
     title: "Getting started",
-    items: [{ slug: "introduction" }, { slug: "examples" }],
+    items: [{ slug: "introduction" }, { slug: "examples" }, { slug: "python" }],
   },
   {
     title: "Core concepts",
@@ -51,6 +51,7 @@ export const FLAT_NAV = NAV.flatMap((s) => s.items);
 export const PAGE_LABELS: Record<string, string> = {
   introduction: "Introduction",
   examples: "Examples",
+  python: "Python SDK",
   configuration: "Configuration",
   routing: "Routing & fallback",
   "capability-routing": "Capability routing",

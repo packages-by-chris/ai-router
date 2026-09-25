@@ -28,16 +28,23 @@ providers and owns the boring parts:
 
 ## Install
 
+### TypeScript / JavaScript
 ```sh
 npm install @ai-router-sdk/core          # routing core
 npm install @ai-router-sdk/redis         # optional: shared rate-limit state
 ```
 
-Zero runtime dependencies. Node 18+, Bun, Deno, and edge runtimes are
-supported — the core uses only `fetch` and WebStreams.
+### Python
+```sh
+pip install ai-router-sdk                # routing core
+pip install "ai-router-sdk[redis]"       # optional: shared Redis state store
+```
+
+Zero mandatory runtime dependencies. Node 18+, Bun, Deno, edge runtimes, and Python 3.10+ are supported.
 
 ## Quickstart
 
+### TypeScript
 ```ts
 import { AIRouter } from "@ai-router-sdk/core";
 
@@ -45,10 +52,9 @@ const router = new AIRouter({
   routes: [
     { id: "fast", provider: "openai", model: "gpt-4o-mini",
       apiKey: process.env.OPENAI_API_KEY },
-    // openai-compatible: any OpenAI-shaped base URL
     { id: "cheap", provider: "openai-compatible", baseUrl: "https://api.deepseek.com/v1",
       model: "deepseek-chat", apiKey: process.env.DEEPSEEK_API_KEY },
-    { id: "backup", provider: "anthropic", model: "claude-haiku-4-5",
+    { id: "backup", provider: "anthropic", model: "claude-3-5-haiku-20241022",
       apiKey: process.env.ANTHROPIC_API_KEY },
   ],
 });
@@ -63,6 +69,27 @@ console.log(res.choices[0].message.content);
 console.log(res.provider); // which provider actually served it
 ```
 
+### Python
+```python
+from ai_router import AIRouter
+
+router = AIRouter(
+    config={
+        "routes": [
+            {"id": "fast", "provider": "openai", "model": "gpt-4o-mini", "apiKey": "${OPENAI_API_KEY}"},
+            {"id": "backup", "provider": "anthropic", "model": "claude-3-5-haiku-20241022", "apiKey": "${ANTHROPIC_API_KEY}"},
+        ]
+    }
+)
+
+# Synchronous or async (await router.complete(...))
+response = router.complete_sync({
+    "model": "fast",
+    "messages": [{"role": "user", "content": "hi"}],
+})
+print(response.choices[0].message.content)
+```
+
 `model` in requests is a **route id** from your config — not a provider model
 name. That indirection is what makes fallback possible.
 
@@ -70,4 +97,5 @@ name. That indirection is what makes fallback possible.
 
 - [Configuration](/docs/configuration) — the full config schema and validation rules
 - [Routing & fallback](/docs/routing) — retries, key rotation, and the recovery layers
+- [Python SDK](/docs/python) — sync & async Python API reference
 - [Examples](/docs/examples) — copy-paste recipes for common setups

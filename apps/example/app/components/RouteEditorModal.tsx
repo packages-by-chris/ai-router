@@ -1,7 +1,7 @@
 "use client";
 
 import { useEffect, useState } from "react";
-import { CAPABILITY_FLAGS, KEYLESS_PROVIDERS, PROVIDERS, type CapabilityFlag } from "./constants";
+import { CAPABILITY_FLAGS, FALLBACK_MODELS, KEYLESS_PROVIDERS, PROVIDERS, type CapabilityFlag } from "./constants";
 import type { ServerRoute } from "./types";
 
 export interface RouteDraft {
@@ -115,8 +115,51 @@ export function RouteEditorModal({
   const [local, setLocal] = useState<RouteDraft | null>(draft);
   const [errors, setErrors] = useState<Partial<Record<keyof RouteDraft, string>>>({});
   const [saving, setSaving] = useState(false);
+  const [models, setModels] = useState<string[]>([]);
+  const [customModel, setCustomModel] = useState(false);
 
-  useEffect(() => setLocal(draft), [draft]);
+  useEffect(() => {
+    setLocal(draft);
+    setCustomModel(false);
+  }, [draft]);
+
+  const provider = local?.provider ?? "";
+  const baseUrl = local?.baseUrl ?? "";
+  const apiKey = local?.apiKey ?? "";
+
+  // Reset suggestions immediately on provider switch (models are provider-specific).
+  useEffect(() => {
+    setModels(FALLBACK_MODELS[provider] ?? []);
+  }, [provider]);
+
+  // Model suggestions for the current provider: live list from the
+  // provider's /models endpoint, merged over static fallback ids.
+  useEffect(() => {
+    if (!provider) return;
+    const ctrl = new AbortController();
+    const t = setTimeout(() => {
+      fetch("/api/models", {
+        method: "POST",
+        headers: { "content-type": "application/json" },
+        body: JSON.stringify({ provider, baseUrl, apiKey, routeId: editingId }),
+        signal: ctrl.signal,
+      })
+        .then((r) => (r.ok ? r.json() : { models: [] }))
+        .then((d: { models?: unknown }) => {
+          const live = Array.isArray(d.models)
+            ? d.models.filter((m): m is string => typeof m === "string")
+            : [];
+          setModels([...new Set([...(FALLBACK_MODELS[provider] ?? []), ...live])]);
+        })
+        .catch(() => {
+          if (!ctrl.signal.aborted) setModels(FALLBACK_MODELS[provider] ?? []);
+        });
+    }, 350);
+    return () => {
+      clearTimeout(t);
+      ctrl.abort();
+    };
+  }, [provider, baseUrl, apiKey, editingId]);
 
   if (!local) return null;
 
@@ -162,7 +205,10 @@ export function RouteEditorModal({
               <Field label="provider">
                 <select
                   value={local.provider}
-                  onChange={(e) => patch({ provider: e.target.value })}
+                  onChange={(e) => {
+                    setCustomModel(false);
+                    patch({ provider: e.target.value, model: "" });
+                  }}
                 >
                   {PROVIDERS.map((p) => (
                     <option key={p} value={p}>
@@ -172,11 +218,47 @@ export function RouteEditorModal({
                 </select>
               </Field>
               <Field label="model" error={errors.model}>
-                <input
-                  value={local.model}
-                  placeholder="gpt-4o-mini"
-                  onChange={(e) => patch({ model: e.target.value })}
-                />
+                {(() => {
+                  // Custom when explicitly chosen, or when the stored id isn't listed yet.
+                  const isCustom =
+                    customModel || (local.model !== "" && !models.includes(local.model));
+                  return (
+                    <>
+                      <select
+                        value={isCustom ? "__custom" : local.model}
+                        onChange={(e) => {
+                          if (e.target.value === "__custom") setCustomModel(true);
+                          else {
+                            setCustomModel(false);
+                            patch({ model: e.target.value });
+                          }
+                        }}
+                      >
+                        <option value="" disabled>
+                          pick a model…
+                        </option>
+                        {models.map((m) => (
+                          <option key={m} value={m}>
+                            {m}
+                          </option>
+                        ))}
+                        <option value="__custom">custom…</option>
+                      </select>
+                      {isCustom && (
+                        <input
+                          value={local.model}
+                          placeholder={`${local.provider} model id`}
+                          onChange={(e) => patch({ model: e.target.value })}
+                        />
+                      )}
+                    </>
+                  );
+                })()}
+                <span className="field-hint">
+                  {models.length > 0
+                    ? `${models.length} for ${local.provider} · or pick custom…`
+                    : `live list unavailable — pick custom… and type a ${local.provider} id`}
+                </span>
               </Field>
             </div>
             <Field label={editingId ? "api key · blank keeps current" : "api key"} error={errors.apiKey}>

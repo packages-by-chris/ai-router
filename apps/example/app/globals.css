@@ -974,6 +974,29 @@ textarea:focus {
   margin: 0;
 }
 
+/* reasoning/thinking stream shown above assistant content */
+.reasoning-block {
+  font-size: 11.5px;
+  color: var(--ink-faint);
+  margin-bottom: 6px;
+}
+
+.reasoning-block summary {
+  cursor: pointer;
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  color: var(--ink-faint);
+  user-select: none;
+}
+
+.reasoning-text {
+  margin-top: 6px;
+  padding-left: 8px;
+  border-left: 2px solid var(--line);
+  white-space: pre-wrap;
+}
+
 /* ── modal ─────────────────────────────────────────────────────────────── */
 
 .modal-scrim {

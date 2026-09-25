@@ -55,12 +55,13 @@ export default function RootLayout({ children }: { children: ReactNode }) {
       <body>
         <header className="site-header">
           <Link href="/" className="brand">
-            ai-router<span className="brand-dot" aria-hidden="true" />
+            ai-router-sdk<span className="brand-dot" aria-hidden="true" />
             <span className="brand-sub">docs</span>
           </Link>
           <nav>
             <Link href="/docs/introduction">Docs</Link>
             <Link href="/docs/api-reference">API</Link>
+            <Link href="/docs/python">Python</Link>
             <Link href="/docs/examples">Examples</Link>
             <a
               href={EXAMPLE_URL}

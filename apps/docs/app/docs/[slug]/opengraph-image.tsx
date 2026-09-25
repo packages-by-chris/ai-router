@@ -4,7 +4,7 @@ import { sectionOf } from "@/lib/nav";
 
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
-export const alt = "ai-router docs";
+export const alt = "ai-router-sdk docs";
 
 export function generateStaticParams() {
   return getDocSlugs().map((slug) => ({ slug }));
@@ -54,7 +54,7 @@ export default async function DocOpengraphImage({
               display: "flex",
             }}
           />
-          {(section ?? "docs").toUpperCase()} · AI-ROUTER
+          {(section ?? "docs").toUpperCase()} · AI-ROUTER-SDK
         </div>
         <div style={{ display: "flex", flexDirection: "column", gap: 24 }}>
           <div

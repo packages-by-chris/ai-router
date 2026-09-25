@@ -94,3 +94,23 @@ Implementation notes:
 Other `RedisStoreOptions`: `prefix` (key namespace, default `"ai-router:"`),
 `onError` (hook every client error into your logger/metrics), `now` (clock
 injection for tests).
+
+## Shared routing state: RedisStateStore
+
+Beyond rate-limit counters, `@ai-router-sdk/redis` provides `RedisStateStore` to share learned routing intelligence across instances (latency EMAs, health scores, circuit breaker states, and outcome quality memory):
+
+```ts
+import { AIRouter } from "@ai-router-sdk/core";
+import { RedisStore, RedisStateStore, ioredisClient } from "@ai-router-sdk/redis";
+import Redis from "ioredis";
+
+const redis = new Redis(process.env.REDIS_URL);
+const client = ioredisClient(redis);
+
+const router = new AIRouter(config, {
+  store: new RedisStore({ client }),
+  stateStore: new RedisStateStore({ client, prefix: "ai-router:state" }),
+});
+```
+
+When replicas restart or autoscale, `RedisStateStore` restores accumulated health statistics and circuit breaker cooldowns immediately rather than relearning from scratch.

@@ -33,7 +33,8 @@ function parseMessages(input: unknown): ChatMessage[] | null {
  *   {"type":"plan","strategy":"cheapest","candidates":[...]}   ← dry-run decision
  *   {"type":"event","routeId":"openai","outcome":"error","kind":"server","attempts":2,...}
  *   {"type":"event","routeId":"anthropic","outcome":"ok","attempts":1,...}
- *   {"type":"delta","text":"Hel"}
+ *   {"type":"delta","text":"Hel","of":"content"}
+ *   {"type":"delta","text":"user wants…","of":"reasoning"}   ← thinking models
  *   {"type":"done","finish":"stop"}
  *
  * Every fallback, retry, key rotation, rate-limit skip, and capability skip
@@ -152,7 +153,13 @@ export async function POST(req: Request) {
           }
           if (chunk.delta.content) {
             chars += chunk.delta.content.length;
-            send({ type: "delta", text: chunk.delta.content });
+            send({ type: "delta", text: chunk.delta.content, of: "content" });
+          }
+          // Reasoning models (deepseek-reasoner, o-series, thinking modes) emit
+          // delta.reasoning — forward it or the bubble stays empty when the
+          // token budget is spent entirely on thinking.
+          if (chunk.delta.reasoning) {
+            send({ type: "delta", text: chunk.delta.reasoning, of: "reasoning" });
           }
           if (chunk.usage) tokensOut = chunk.usage.completion_tokens;
           if (chunk.cost_usd !== undefined) costUsd = chunk.cost_usd;

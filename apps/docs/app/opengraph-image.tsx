@@ -3,7 +3,7 @@ import { SITE_TAGLINE } from "@/lib/site";
 
 export const size = { width: 1200, height: 630 };
 export const contentType = "image/png";
-export const alt = "ai-router — provider-agnostic AI routing for TypeScript";
+export const alt = "ai-router-sdk — provider-agnostic AI routing for TypeScript & Python";
 
 export default async function OpengraphImage() {
   return new ImageResponse(
@@ -53,7 +53,7 @@ export default async function OpengraphImage() {
               letterSpacing: -4,
             }}
           >
-            ai-router
+            ai-router-sdk
             <div style={{ color: "#3ecf8e" }}>.</div>
           </div>
           <div style={{ display: "flex", fontSize: 40, color: "#707070" }}>

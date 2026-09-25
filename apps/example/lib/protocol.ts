@@ -22,7 +22,8 @@ export interface Stats {
 export type ChatFrame =
   | ({ type: "event" } & AttemptEvent)
   | ({ type: "plan" } & RoutingExplanation)
-  | { type: "delta"; text: string }
+  /** Text chunk — `of` distinguishes visible content from reasoning/thinking (default: content). */
+  | { type: "delta"; text: string; of?: "content" | "reasoning" }
   | ({ type: "stats" } & Stats)
   | { type: "done"; finish: string | null }
   | { type: "error"; message: string };

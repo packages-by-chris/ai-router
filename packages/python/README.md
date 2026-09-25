@@ -1,8 +1,8 @@
-# ai-router (Python SDK)
+# ai-router-sdk (Python)
 
 **Embeddable, provider-agnostic AI routing engine for Python.**
 
-`ai-router` provides the routing, reliability, and governance capabilities of an AI gateway without requiring a separate proxy service. It runs directly inside your Python application, talks to providers over their native APIs, and handles:
+`ai-router-sdk` provides the routing, reliability, and governance capabilities of an AI gateway without requiring a separate proxy service. It runs directly inside your Python application, talks to providers over their native APIs, and handles:
 
 - **Ordered fallback chains** across models and providers.
 - **Smart routing strategies**: `fallback`, `round-robin`, `weighted`, `least-latency`, `cheapest`, `balanced`, `quality-first`.
@@ -18,12 +18,12 @@
 ## Installation
 
 ```bash
-pip install ai-router
+pip install ai-router-sdk
 ```
 
 ### Optional Extras
-- **Redis state store**: `pip install "ai-router[redis]"`
-- **HTTPX client support**: `pip install "ai-router[httpx]"`
+- **Redis state store**: `pip install "ai-router-sdk[redis]"`
+- **HTTPX client support**: `pip install "ai-router-sdk[httpx]"`
 
 ---
 

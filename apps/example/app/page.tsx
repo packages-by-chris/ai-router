@@ -25,6 +25,8 @@ type ServerRoute = ServerRouteDTO;
 interface Msg {
   role: "user" | "assistant" | "error";
   content: string;
+  /** Reasoning/thinking stream (models that emit delta.reasoning). */
+  reasoning?: string;
   events?: AttemptEvent[];
   finish?: string | null;
   stats?: Stats;
@@ -309,7 +311,11 @@ export default function Page() {
           } else if (msg.type === "event") {
             patchLast((m) => ({ ...m, events: [...(m.events ?? []), msg] }));
           } else if (msg.type === "delta") {
-            patchLast((m) => ({ ...m, content: m.content + msg.text }));
+            if (msg.of === "reasoning") {
+              patchLast((m) => ({ ...m, reasoning: (m.reasoning ?? "") + msg.text }));
+            } else {
+              patchLast((m) => ({ ...m, content: m.content + msg.text }));
+            }
           } else if (msg.type === "stats") {
             const { type: _t, ...stats } = msg;
             patchLast((m) => ({ ...m, stats }));
@@ -499,11 +505,17 @@ function MessageRow({
       {msg.plan && <PlanCard plan={msg.plan} />}
       {(msg.events?.length ?? 0) > 0 && <EventTimeline events={msg.events!} />}
       <div className={`bubble assistant ${msg.role === "error" ? "error" : ""}`}>
+        {msg.reasoning && (
+          <details className="reasoning-block" open={!msg.content}>
+            <summary>thinking</summary>
+            <div className="reasoning-text">{msg.reasoning}</div>
+          </details>
+        )}
         {msg.content ? (
           <Formatted text={msg.content} streaming={streaming} />
-        ) : (
+        ) : !msg.reasoning ? (
           <span className="dim">{msg.role === "error" ? "" : "…"}</span>
-        )}
+        ) : null}
       </div>
       {msg.stats && (
         <div className="stat-strip mono">
