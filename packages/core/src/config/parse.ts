@@ -118,7 +118,7 @@ export function parseConfig(input: unknown, env?: Record<string, string | undefi
 
   for (const key of Object.keys(interpolated)) {
     if (!TOP_LEVEL_FIELDS.has(key)) {
-      errors.push(`config.${key}: unknown field (known: routes, strategy)`);
+      errors.push(`config.${key}: unknown field (known: routes, strategy, weights)`);
     }
   }
 

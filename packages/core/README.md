@@ -19,21 +19,17 @@ import { AIRouter, parseConfig, streamText } from "@ai-router-sdk/core";
 const config = parseConfig({
   routes: [
     {
-      id: "fast-chat",
-      strategy: "fallback",
-      candidates: [
-        {
-          provider: "openai",
-          model: "gpt-4o-mini",
-          apiKey: process.env.OPENAI_API_KEY!,
-          rateLimit: { rpm: 500 },
-        },
-        {
-          provider: "anthropic",
-          model: "claude-3-5-haiku-20241022",
-          apiKey: process.env.ANTHROPIC_API_KEY!,
-        },
-      ],
+      id: "fast",
+      provider: "openai",
+      model: "gpt-4o-mini",
+      apiKey: process.env.OPENAI_API_KEY,
+      limit: { rpm: 500 },
+    },
+    {
+      id: "backup",
+      provider: "anthropic",
+      model: "claude-3-5-haiku-20241022",
+      apiKey: process.env.ANTHROPIC_API_KEY,
     },
   ],
 });
@@ -41,9 +37,9 @@ const config = parseConfig({
 // 2. Initialize router
 const router = new AIRouter(config);
 
-// 3. Complete or stream requests
+// 3. Complete requests with automatic fallback
 const response = await router.complete({
-  model: "fast-chat", // route id
+  model: "fast", // route id
   messages: [{ role: "user", content: "Explain quantum computing in one sentence." }],
 });
 
@@ -51,13 +47,16 @@ console.log(response.choices[0]?.message.content);
 
 // 4. Or stream tokens cleanly
 const stream = await router.stream({
-  model: "fast-chat",
+  model: "fast",
   messages: [{ role: "user", content: "Count from 1 to 5." }],
 });
 
-for await (const chunk of streamText(stream)) {
-  process.stdout.write(chunk);
+for await (const chunk of stream) {
+  process.stdout.write(chunk.delta.content ?? "");
 }
+
+// Or collect text all at once:
+// const fullText = await streamText(await router.stream({ model: "fast", messages: [...] }));
 ```
 
 ## Features

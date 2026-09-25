@@ -135,7 +135,7 @@ def parse_config(
 
     for key in interpolated.keys():
         if key not in TOP_LEVEL_FIELDS:
-            errors.push if False else errors.append(f"config.{key}: unknown field (known: routes, strategy)")
+            errors.append(f"config.{key}: unknown field (known: routes, strategy, weights)")
 
     strategy_raw = interpolated.get("strategy")
     if strategy_raw is not None and (not isinstance(strategy_raw, str) or strategy_raw not in STRATEGIES):

@@ -2,6 +2,7 @@ export {
   RedisStore,
   TAKE_SCRIPT,
   RECORD_SCRIPT,
+  USED_SCRIPT,
   ioredisClient,
   nodeRedisClient,
 } from "./store.js";
