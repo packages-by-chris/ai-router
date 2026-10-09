@@ -7,7 +7,7 @@ description: The Go SDK for ai-router-sdk — zero external runtime dependencies
 
 `github.com/ai-router-sdk/ai-router-go` is the official Go SDK for `ai-router-sdk`. It provides multi-provider AI routing, automatic fallback chains, streaming commit boundaries, in-memory rate limiting, and wire translation for Go backends.
 
-It is built with **zero external runtime dependencies** (Go standard library only) and 100% pass on shared cross-SDK conformance fixtures.
+It is built with **zero external runtime dependencies** (Go standard library only) and achieves 100% pass on shared cross-SDK conformance fixtures.
 
 ## Installation
 
@@ -15,7 +15,11 @@ It is built with **zero external runtime dependencies** (Go standard library onl
 go get github.com/ai-router-sdk/ai-router-go
 ```
 
+Go 1.21 or higher is required.
+
 ## Quick Start
+
+### 1. Completions with Fallback & Retries
 
 ```go
 package main
@@ -48,6 +52,12 @@ func main() {
 				"model":    "claude-3-5-haiku-20241022",
 				"apiKey":   "${ANTHROPIC_API_KEY}",
 			},
+			map[string]any{
+				"id":       "backup-gemini",
+				"provider": "gemini",
+				"model":    "gemini-2.0-flash",
+				"apiKey":   "${GEMINI_API_KEY}",
+			},
 		},
 	})
 	if err != nil {
@@ -66,37 +76,48 @@ func main() {
 	}
 
 	fmt.Println(resp.Choices[0].Message.Content)
-	fmt.Printf("Served by: %s\n", resp.Provider)
+	fmt.Printf("Served by: %s (%s)\n", resp.Provider, resp.Model)
+}
+```
 
-	// 3. Stream tokens in real-time via Go channels
-	chunks, errs := router.Stream(ctx, airouter.ChatRequest{
-		Model: "fast",
-		Messages: []airouter.ChatMessage{
-			{Role: airouter.RoleUser, Content: "Count from 1 to 5."},
-		},
-	})
+### 2. Streaming via Go Channels
 
-	for {
-		select {
-		case err, ok := <-errs:
-			if ok && err != nil {
-				log.Fatalf("stream error: %v", err)
-			}
-		case chunk, ok := <-chunks:
-			if !ok {
-				return
-			}
-			if chunk.Delta.Content != nil {
-				fmt.Print(*chunk.Delta.Content)
-			}
+Streaming uses standard Go channels with a **committed stream contract**:
+
+```go
+chunks, errs := router.Stream(ctx, airouter.ChatRequest{
+	Model: "fast",
+	Messages: []airouter.ChatMessage{
+		{Role: airouter.RoleUser, Content: "Count from 1 to 5."},
+	},
+})
+
+for {
+	select {
+	case err, ok := <-errs:
+		if ok && err != nil {
+			log.Fatalf("stream error: %v", err)
+		}
+	case chunk, ok := <-chunks:
+		if !ok {
+			return
+		}
+		if chunk.Delta.Content != nil {
+			fmt.Print(*chunk.Delta.Content)
 		}
 	}
 }
 ```
 
-## Supported Features in Go
+Or collect full text directly:
 
-- **Multi-Provider Unified API**: OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock Converse (with built-in AWS SigV4 signing), Google Cloud Vertex AI, Azure OpenAI, and generic OpenAI-compatible providers.
+```go
+text, err := airouter.StreamText(ctx, chunks, errs)
+```
+
+## Features
+
+- **Multi-Provider Unified API**: OpenAI, Anthropic Claude, Google Gemini, AWS Bedrock Converse (with built-in AWS SigV4 signing), Google Cloud Vertex AI, Azure OpenAI, and generic OpenAI-compatible providers (Groq, DeepSeek, Together, Ollama, etc.).
 - **Ordered Fallback Chains & Key Pools**: Automatic key rotation on rate-limits (HTTP 429) and transparent failover across providers.
 - **7 Routing Strategies**: `fallback`, `round-robin`, `weighted`, `least-latency`, `cheapest`, `quality-first`, and `balanced`.
 - **In-Memory Sliding-Window Rate Limiting**: Request and token rate limits (`rpm`, `tpm`).

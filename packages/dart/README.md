@@ -1,97 +1,214 @@
 # ai_router
 
-Provider-agnostic AI routing SDK for Dart & Flutter: fallback chains, key pools, rate limiting, and unified streaming across OpenAI, Anthropic, Gemini, Azure, Bedrock, Vertex, and OpenAI-compatible endpoints.
+**Embeddable, provider-agnostic AI routing engine for Dart & Flutter.**
 
-Minimal runtime dependencies — standard Dart HTTP client and crypto.
+`ai_router` brings the routing, reliability, and governance capabilities of an AI gateway directly into your Dart and Flutter applications. It runs in-process, talks to LLM providers directly over their native APIs, and handles:
+
+- **Ordered fallback chains** across models, tiers, and providers.
+- **Smart routing strategies**: `fallback`, `round-robin`, `weighted`, `least-latency`, `cheapest`, `balanced`, `quality-first`.
+- **In-memory sliding-window rate limiting** (RPM / TPM) & **spend budget caps** (USD).
+- **Statistical health tracking** (Wilson lower-bound scoring, latency EMA, adaptive error backoff).
+- **Key-pool rotation & circuit breaking**.
+- **Real-time streaming via standard Dart Streams** (`Stream<ChatChunk>`) with commit-boundary guarantees.
+- **Pluggable Input / Output Guardrails** to block or rewrite prompts and completions.
+- **Minimal runtime dependencies** — built with standard Dart `http` and `crypto` libraries.
+
+---
 
 ## Installation
 
-Add to your `pubspec.yaml`:
+Add `ai_router` to your `pubspec.yaml`:
 
 ```yaml
 dependencies:
   ai_router: ^0.1.0
 ```
 
-Or run:
+Or install with `dart pub`:
 
 ```bash
 dart pub add ai_router
 ```
 
+---
+
 ## Quick Start
+
+### 1. Unified Completions with Automatic Fallback
+
+```dart
+import 'package:ai_router/ai_router.dart';
+
+void main() async {
+  // 1. Define configuration with declarative fallback routes & rate limits
+  final router = AIRouter(
+    config: parseConfig({
+      'strategy': 'fallback',
+      'routes': [
+        {
+          'id': 'fast',
+          'provider': 'openai',
+          'model': 'gpt-4o-mini',
+          'apiKey': '${OPENAI_API_KEY}',
+          'limit': {'rpm': 500},
+        },
+        {
+          'id': 'backup-anthropic',
+          'provider': 'anthropic',
+          'model': 'claude-3-5-haiku-20241022',
+          'apiKey': '${ANTHROPIC_API_KEY}',
+        },
+        {
+          'id': 'backup-gemini',
+          'provider': 'gemini',
+          'model': 'gemini-2.0-flash',
+          'apiKey': '${GEMINI_API_KEY}',
+        },
+      ],
+    }),
+  );
+
+  // 2. Complete request — model is a route id, not a provider model name
+  final response = await router.complete(
+    const ChatRequest(
+      model: 'fast',
+      messages: [
+        ChatMessage(role: Roles.user, content: 'Explain distributed consensus in two sentences.'),
+      ],
+    ),
+  );
+
+  print(response.choices.first.message.content);
+  print('Served by: ${response.provider} (${response.model})');
+}
+```
+
+---
+
+### 2. Real-Time Streaming with Dart Streams
+
+Streaming returns a standard `Stream<ChatChunk>` with a **committed stream contract**: attempt events and retries occur before the first token, ensuring zero duplicate tokens once streaming begins.
 
 ```dart
 import 'dart:io';
 import 'package:ai_router/ai_router.dart';
 
 void main() async {
-  // 1. Define configuration with fallback routes & rate limits
-  final config = parseConfig({
-    'routes': [
-      {
-        'id': 'fast',
-        'provider': 'openai',
-        'model': 'gpt-4o-mini',
-        'apiKey': '\${OPENAI_API_KEY}',
-        'limit': {'rpm': 500},
-      },
-      {
-        'id': 'backup',
-        'provider': 'anthropic',
-        'model': 'claude-3-5-haiku-20241022',
-        'apiKey': '\${ANTHROPIC_API_KEY}',
-      },
-    ],
-  });
-
-  // 2. Initialize router
-  final router = AIRouter(config: config);
-
-  // 3. Complete requests with automatic fallback
-  final response = await router.complete(
-    ChatRequest(
-      model: 'fast', // route id
-      messages: [
-        ChatMessage(role: Roles.user, content: 'Explain quantum computing in one sentence.'),
+  final router = AIRouter(
+    config: parseConfig({
+      'routes': [
+        {'id': 'fast', 'provider': 'openai', 'model': 'gpt-4o-mini', 'apiKey': '${OPENAI_API_KEY}'},
       ],
-    ),
+    }),
   );
 
-  print(response.choices.first.message.content);
-
-  // 4. Or stream tokens cleanly
   final stream = router.stream(
-    ChatRequest(
+    const ChatRequest(
       model: 'fast',
       messages: [
-        ChatMessage(role: Roles.user, content: 'Count from 1 to 5.'),
+        ChatMessage(role: Roles.user, content: 'Count from 1 to 10 with a brief note for each.'),
       ],
     ),
   );
 
   await for (final chunk in stream) {
-    stdout.write(chunk.delta.content ?? '');
+    if (chunk.delta.content != null) {
+      stdout.write(chunk.delta.content);
+    }
   }
 
-  // Or collect stream text:
+  // Or collect stream text into a single String:
   // final fullText = await streamText(stream);
 }
 ```
 
-## Features
+---
 
-- **Multi-Provider Unified API**: OpenAI, Anthropic, Gemini, AWS Bedrock (SigV4 signing), Google Vertex AI, Azure OpenAI, and OpenAI-compatible providers (Groq, DeepSeek, Together, Ollama, etc.).
-- **Reliable Fallback Chains & Key Pools**: Automatic key rotation on rate limits and failover across model tiers and providers.
-- **Rate Limiting & Budgets**: In-memory sliding-window log and rate limit store abstraction.
-- **Latency, Cost & Quality Routing**: Strategies like `fallback`, `round-robin`, `weighted`, `least-latency`, `cheapest`, `quality-first`, and `balanced`.
-- **Streaming Commit Boundary**: Prevents duplicate tokens when a stream fails mid-response while allowing clean retries before the first byte.
-- **Tool Calling & Multimodal**: Complete schema normalization and cross-SDK JSON conformance validation.
-- **Strict Typing**: Full strict-mode null safety and zero warnings on `dart analyze`.
+### 3. Tool Calling
+
+Tool schemas and invocations are normalized across OpenAI, Anthropic, Gemini, AWS Bedrock, and Azure:
+
+```dart
+final response = await router.complete(
+  ChatRequest(
+    model: 'fast',
+    messages: const [ChatMessage(role: Roles.user, content: 'What is the weather in Tokyo?')],
+    tools: [
+      Tool(
+        type: 'function',
+        function: FunctionDef(
+          name: 'get_weather',
+          description: 'Get current weather for a city',
+          parameters: {
+            'type': 'object',
+            'properties': {
+              'location': {'type': 'string'},
+            },
+            'required': ['location'],
+          },
+        ),
+      ),
+    ],
+  ),
+);
+
+for (final call in response.choices.first.message.toolCalls) {
+  print('Function: ${call.function?.name}, Args: ${call.function?.arguments}');
+}
+```
+
+---
+
+### 4. Input & Output Guardrails
+
+```dart
+final redactKeys = InputGuardrail(
+  name: 'redact-keys',
+  check: (req) async {
+    final messages = req.messages.map((m) {
+      if (m.content is String && (m.content as String).contains('sk-')) {
+        return ChatMessage(
+          role: m.role,
+          content: (m.content as String).replaceAll(RegExp(r'sk-[a-zA-Z0-9]{20,}'), '[REDACTED]'),
+        );
+      }
+      return m;
+    }).toList();
+
+    return GuardrailVerdict(
+      pass: true,
+      replace: req.copyWith(messages: messages),
+    );
+  },
+);
+
+final router = AIRouter(
+  config: config,
+  options: AIRouterOptions(
+    guardrails: GuardrailOptions(input: [redactKeys]),
+  ),
+);
+```
+
+---
+
+## Supported Providers
+
+| Provider | ID | Authentication / Wire Protocol |
+|---|---|---|
+| **OpenAI** | `openai` | Bearer token (`apiKey` / `apiKeys`) |
+| **Anthropic** | `anthropic` | `x-api-key` + `anthropic-version` |
+| **Google Gemini** | `gemini` | `x-goog-api-key` REST API |
+| **AWS Bedrock** | `bedrock` | AWS SigV4 signed requests (`Converse` API) |
+| **Azure OpenAI** | `azure` | `api-key` header with deployment route layout |
+| **Google Vertex AI** | `vertex` | Bearer OAuth token + GCP Project/Region layout |
+| **OpenAI-Compatible** | `openai-compatible` | DeepSeek, Groq, Together, Ollama, vLLM, etc. |
+
+---
 
 ## Testing & Conformance
 
-Run unit tests and cross-SDK conformance suites:
+Run the full unit test and cross-SDK JSON conformance suite:
 
 ```bash
 dart test
@@ -99,6 +216,8 @@ dart test test/conformance_test.dart
 dart analyze
 ```
 
+---
+
 ## License
 
-MIT
+[MIT](../../LICENSE)
