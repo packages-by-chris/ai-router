@@ -23,7 +23,9 @@
     "smoke:python": "uv run --project packages/python python scripts/smoke.py",
     "test:dart": "cd packages/dart && dart test",
     "analyze:dart": "cd packages/dart && dart analyze",
-    "conformance:dart": "cd packages/dart && dart test test/conformance_test.dart"
+    "conformance:dart": "cd packages/dart && dart test test/conformance_test.dart",
+    "test:go": "cd packages/go && go test -v ./...",
+    "conformance:go": "cd packages/go && go test -v -run TestConformanceFixtures ./..."
   },
   "devDependencies": {
     "tsx": "^4.19.0",

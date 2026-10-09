@@ -1,6 +1,6 @@
 # ai-router-sdk
 
-**An embeddable, provider-agnostic AI routing engine for TypeScript, Python, and Dart.**
+**An embeddable, provider-agnostic AI routing engine for TypeScript, Python, Dart, and Go.**
 
 ai-router-sdk provides the routing and reliability capabilities of an AI gateway
 without requiring you to deploy one. It runs inside your application process,
@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.1.0, initial release. TypeScript (`@ai-router-sdk/core`), Python (`ai-router`), and Dart (`ai_router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
+**Status:** v0.1.0, initial release. TypeScript (`@ai-router-sdk/core`), Python (`ai-router`), Dart (`ai_router`), and Go (`ai-router-go`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
 
 ## What you get
 
@@ -135,7 +135,7 @@ need the *logic* of a gateway embedded in the app.
 | Extra network hop | Yes | Yes | None |
 | Provider keys | Often theirs / proxied | Yours, stored server-side | Yours, never leave the app |
 | Failure domain | Vendor + your app | Proxy + your app | Your app only |
-| Language | Any (HTTP) | Python-centric | TypeScript-native |
+| Language | Any (HTTP) | Python-centric | TypeScript, Python, Dart, Go |
 | Shared state across replicas | Built in | Built in | Optional (`@ai-router-sdk/redis`) |
 
 Choose ai-router-sdk when routing behavior should live in your TypeScript
@@ -609,8 +609,9 @@ application-recorded quality as adaptive signals.
 - `@ai-router-sdk/redis` shared rate-limit store & state store
 - Python SDK (`ai-router`) with full sync & async APIs and 1:1 parity with TypeScript
 - Dart SDK (`ai_router`) with strict null-safety and 1:1 parity with TypeScript
+- Go SDK (`ai-router-go`) with standard library zero dependencies and 1:1 parity with TypeScript
 - Cross-SDK conformance fixture suite (request/response/chunk/SSE)
-- GitHub Actions CI matrix testing across Node.js (20, 22), Python (3.10-3.13), and Dart (3.0+)
+- GitHub Actions CI matrix testing across Node.js (20, 22), Python (3.10-3.13), Dart (3.0+), and Go (1.21+)
 
 **Exploring**
 
@@ -632,6 +633,7 @@ Repository layout:
 packages/core/    @ai-router-sdk/core — the TypeScript library
 packages/python/  ai-router — the Python SDK
 packages/dart/    ai_router — the Dart SDK
+packages/go/      github.com/ai-router-sdk/ai-router-go — the Go SDK
 packages/redis/   @ai-router-sdk/redis — shared RateLimitStore
 apps/example/     Next.js chat demo (env-driven fallback chain)
 apps/docs/        Documentation site

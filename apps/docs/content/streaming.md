@@ -5,6 +5,7 @@ description: Committed streams — one async chunk shape across all providers.
 
 # Streaming
 
+### TypeScript
 ```ts
 const stream = await router.stream({
   model: "fast",
@@ -13,6 +14,60 @@ const stream = await router.stream({
 
 for await (const chunk of stream) {
   process.stdout.write(chunk.delta.content ?? "");
+}
+```
+
+### Python
+```python
+stream = router.stream_sync({
+    "model": "fast",
+    "messages": [{"role": "user", "content": "hi"}],
+})
+
+for chunk in stream:
+    if chunk.delta.content:
+        print(chunk.delta.content, end="", flush=True)
+```
+
+### Dart
+```dart
+final stream = router.stream(
+  const ChatRequest(
+    model: 'fast',
+    messages: [ChatMessage(role: Roles.user, content: 'hi')],
+  ),
+);
+
+await for (final chunk in stream) {
+  if (chunk.delta.content != null) {
+    stdout.write(chunk.delta.content);
+  }
+}
+```
+
+### Go
+```go
+chunks, errs := router.Stream(ctx, airouter.ChatRequest{
+	Model: "fast",
+	Messages: []airouter.ChatMessage{
+		{Role: airouter.RoleUser, Content: "hi"},
+	},
+})
+
+for {
+	select {
+	case err, ok := <-errs:
+		if ok && err != nil {
+			log.Fatalf("stream err: %v", err)
+		}
+	case chunk, ok := <-chunks:
+		if !ok {
+			return
+		}
+		if chunk.Delta.Content != nil {
+			fmt.Print(*chunk.Delta.Content)
+		}
+	}
 }
 ```
 

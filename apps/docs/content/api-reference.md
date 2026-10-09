@@ -6,7 +6,7 @@ description: The complete public surface of @ai-router-sdk/core and @ai-router-s
 # API reference
 
 Public surface of `@ai-router-sdk/core` — everything below is exported from the
-package root.
+package root. For other languages, see [Python SDK](/docs/python), [Dart SDK](/docs/dart), and [Go SDK](/docs/go).
 
 ## AIRouter
 

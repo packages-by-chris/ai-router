@@ -1,6 +1,6 @@
 # Conformance fixtures
 
-The multi-language drift guard. Each SDK (TypeScript, Python, and Dart) must
+The multi-language drift guard. Each SDK (TypeScript, Python, Dart, and Go) must
 pass the **same** JSON fixtures against its own implementation.
 
 ## Contract

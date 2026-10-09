@@ -8,6 +8,7 @@ Turborepo monorepo. npm workspaces.
 packages/core/   → @ai-router-sdk/core — the TypeScript library (zero runtime deps)
 packages/python/ → ai-router — the Python SDK (Python 3.10+, zero runtime deps)
 packages/dart/   → ai_router — the Dart SDK (Dart 3.0+, minimal deps)
+packages/go/     → github.com/ai-router-sdk/ai-router-go — the Go SDK (Go 1.21+, zero runtime deps)
 packages/redis/  → @ai-router-sdk/redis — Redis RateLimitStore adapter
 apps/example/    → Next.js chat UI (demo)
 apps/docs/       → Next.js docs site
@@ -42,10 +43,24 @@ npm run conformance:dart   # cross-SDK fixture tests (dart)
 npm run analyze:dart       # dart analyze, strict type checking
 ```
 
+### Go SDK
+```bash
+npm run test:go            # go test -v ./...
+npm run conformance:go     # cross-SDK fixture tests (go)
+```
+
 Run single package test: `npm test -w @ai-router-sdk/core`
 Run single file: `npx vitest run packages/core/tests/config.test.ts`
 
 Order matters: `build → typecheck` (turbo dep). Tests don't depend on build.
+
+## Go SDK Guidelines
+
+- Go 1.21+ requirement
+- Zero external runtime dependencies (standard library only)
+- 100% pass on cross-SDK conformance fixtures (`packages/core/conformance/cases/*.json`)
+- Async streaming via Go channels (`<-chan ChatChunk`, `<-chan error`)
+- Context cancellation & deadline propagation (`context.Context`)
 
 ## Dart SDK Guidelines
 

@@ -9,6 +9,7 @@ description: Copy-paste recipes — fallback chains, key pools, Redis stores, st
 
 Three providers behind one logical model. Order = preference:
 
+### TypeScript
 ```ts
 import { AIRouter } from "@ai-router-sdk/core";
 
@@ -25,6 +26,61 @@ const router = new AIRouter({
 
 // Always address "fast" — the chain does the rest.
 await router.complete({ model: "fast", messages });
+```
+
+### Python
+```python
+from ai_router import AIRouter
+
+router = AIRouter(
+    config={
+        "routes": [
+            {"id": "fast", "provider": "openai", "model": "gpt-4o-mini", "apiKey": "${OPENAI_API_KEY}"},
+            {"id": "backup1", "provider": "gemini", "model": "gemini-2.0-flash", "apiKey": "${GEMINI_API_KEY}"},
+            {"id": "backup2", "provider": "anthropic", "model": "claude-haiku-4-5", "apiKey": "${ANTHROPIC_API_KEY}"},
+        ]
+    }
+)
+
+response = await router.complete({"model": "fast", "messages": messages})
+```
+
+### Dart
+```dart
+import 'package:ai_router/ai_router.dart';
+
+final router = AIRouter(
+  config: parseConfig({
+    'routes': [
+      {'id': 'fast', 'provider': 'openai', 'model': 'gpt-4o-mini', 'apiKey': '${OPENAI_API_KEY}'},
+      {'id': 'backup1', 'provider': 'gemini', 'model': 'gemini-2.0-flash', 'apiKey': '${GEMINI_API_KEY}'},
+      {'id': 'backup2', 'provider': 'anthropic', 'model': 'claude-haiku-4-5', 'apiKey': '${ANTHROPIC_API_KEY}'},
+    ],
+  }),
+);
+
+final response = await router.complete(ChatRequest(model: 'fast', messages: messages));
+```
+
+### Go
+```go
+import (
+	"context"
+	airouter "github.com/ai-router-sdk/ai-router-go"
+)
+
+router, _ := airouter.NewFromMap(map[string]any{
+	"routes": []any{
+		map[string]any{"id": "fast", "provider": "openai", "model": "gpt-4o-mini", "apiKey": "${OPENAI_API_KEY}"},
+		map[string]any{"id": "backup1", "provider": "gemini", "model": "gemini-2.0-flash", "apiKey": "${GEMINI_API_KEY}"},
+		map[string]any{"id": "backup2", "provider": "anthropic", "model": "claude-haiku-4-5", "apiKey": "${ANTHROPIC_API_KEY}"},
+	},
+})
+
+resp, _ := router.Complete(context.Background(), airouter.ChatRequest{
+	Model: "fast",
+	Messages: messages,
+})
 ```
 
 ## Key pools under load

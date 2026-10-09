@@ -45,7 +45,12 @@ pip install "ai-router-sdk[redis]"       # optional: shared Redis state store
 dart pub add ai_router                   # or add ai_router to pubspec.yaml
 ```
 
-Zero mandatory runtime dependencies. Node 18+, Bun, Deno, edge runtimes, Python 3.10+, and Dart 3.0+ / Flutter are supported.
+### Go
+```sh
+go get github.com/ai-router-sdk/ai-router-go
+```
+
+Zero mandatory runtime dependencies. Node 18+, Bun, Deno, edge runtimes, Python 3.10+, Dart 3.0+, and Go 1.21+ are supported.
 
 ## Quickstart
 
@@ -117,6 +122,32 @@ final response = await router.complete(
 print(response.choices.first.message.content);
 ```
 
+### Go
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	airouter "github.com/ai-router-sdk/ai-router-go"
+)
+
+func main() {
+	router, _ := airouter.NewFromMap(map[string]any{
+		"routes": []any{
+			map[string]any{"id": "fast", "provider": "openai", "model": "gpt-4o-mini", "apiKey": "${OPENAI_API_KEY}"},
+			map[string]any{"id": "backup", "provider": "anthropic", "model": "claude-3-5-haiku-20241022", "apiKey": "${ANTHROPIC_API_KEY}"},
+		},
+	})
+
+	resp, _ := router.Complete(context.Background(), airouter.ChatRequest{
+		Model: "fast",
+		Messages: []airouter.ChatMessage{{Role: airouter.RoleUser, Content: "hi"}},
+	})
+	fmt.Println(resp.Choices[0].Message.Content)
+}
+```
+
 `model` in requests is a **route id** from your config — not a provider model
 name. That indirection is what makes fallback possible.
 
@@ -126,4 +157,5 @@ name. That indirection is what makes fallback possible.
 - [Routing & fallback](/docs/routing) — retries, key rotation, and the recovery layers
 - [Python SDK](/docs/python) — sync & async Python API reference
 - [Dart SDK](/docs/dart) — Dart & Flutter SDK reference
+- [Go SDK](/docs/go) — Go SDK reference
 - [Examples](/docs/examples) — copy-paste recipes for common setups

@@ -8,15 +8,26 @@ multi-SDK contract intact.
 ```bash
 npm install          # npm 10.9.8 (see packageManager) — don't use yarn/pnpm
 npm test             # vitest, all packages
-npm run conformance  # cross-SDK fixture tests
+npm run conformance  # cross-SDK fixture tests (TypeScript)
 npm run typecheck    # depends on build
 npm run build        # turbo build
+
+# Cross-language tests:
+npm run test:python        # pytest
+npm run conformance:python # Python conformance
+npm run test:dart          # Dart tests
+npm run conformance:dart   # Dart conformance
+npm run test:go            # Go tests
+npm run conformance:go     # Go conformance
 ```
 
 ## Repo layout
 
 ```
-packages/core/   @ai-router-sdk/core — the library (zero runtime deps)
+packages/core/   @ai-router-sdk/core — the TypeScript library (zero runtime deps)
+packages/python/ ai-router — the Python SDK (zero runtime deps)
+packages/dart/   ai_router — the Dart SDK
+packages/go/     github.com/ai-router-sdk/ai-router-go — the Go SDK (zero runtime deps)
 packages/redis/  @ai-router-sdk/redis — Redis RateLimitStore adapter
 apps/example/    Next.js chat demo
 apps/docs/       docs site
@@ -24,13 +35,12 @@ apps/docs/       docs site
 
 ## Hard rules
 
-1. **Zero runtime deps in core.** Only `fetch` + WebStreams + WebCrypto.
-   No polyfill packages, no node builtins in `src/` except type-only uses.
-   Hand-roll small utilities instead of adding dependencies.
+1. **Zero runtime deps in core/python/go.** Standard library and web standards first.
+   No unnecessary polyfill packages. Hand-roll small utilities instead of adding dependencies.
 2. **Conformance fixtures are the cross-SDK drift guard**
    (`packages/core/conformance/cases/*.json`). Never edit them unilaterally —
-   every change must be ported to the Python SDK in the same change. If a fix
-   changes wire translation behavior, add a fixture case for it.
+   every change must be ported to TypeScript, Python, Dart, and Go in the same change.
+   If a fix changes wire translation behavior, add a fixture case for it.
 3. **`model` is a route id**, never a provider model name.
 4. **ESM-only**, strict TypeScript, extend `tsconfig.base.json`.
    `noUncheckedIndexedAccess` is on — index access needs `!` or a check.
