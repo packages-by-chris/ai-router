@@ -20,7 +20,10 @@
     "test:python": "uv run --project packages/python --with pytest --with pytest-asyncio pytest packages/python/tests",
     "typecheck:python": "uv run --project packages/python --with mypy mypy packages/python/src",
     "conformance:python": "uv run --project packages/python --with pytest --with pytest-asyncio pytest packages/python/tests/test_conformance.py",
-    "smoke:python": "uv run --project packages/python python scripts/smoke.py"
+    "smoke:python": "uv run --project packages/python python scripts/smoke.py",
+    "test:dart": "cd packages/dart && dart test",
+    "analyze:dart": "cd packages/dart && dart analyze",
+    "conformance:dart": "cd packages/dart && dart test test/conformance_test.dart"
   },
   "devDependencies": {
     "tsx": "^4.19.0",

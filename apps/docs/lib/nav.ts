@@ -15,7 +15,7 @@ export interface NavSection {
 export const NAV: NavSection[] = [
   {
     title: "Getting started",
-    items: [{ slug: "introduction" }, { slug: "examples" }, { slug: "python" }],
+    items: [{ slug: "introduction" }, { slug: "examples" }, { slug: "python" }, { slug: "dart" }],
   },
   {
     title: "Core concepts",
@@ -52,6 +52,7 @@ export const PAGE_LABELS: Record<string, string> = {
   introduction: "Introduction",
   examples: "Examples",
   python: "Python SDK",
+  dart: "Dart SDK",
   configuration: "Configuration",
   routing: "Routing & fallback",
   "capability-routing": "Capability routing",

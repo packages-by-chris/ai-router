@@ -1,6 +1,6 @@
 # ai-router-sdk
 
-**An embeddable, provider-agnostic AI routing engine for TypeScript & Python.**
+**An embeddable, provider-agnostic AI routing engine for TypeScript, Python, and Dart.**
 
 ai-router-sdk provides the routing and reliability capabilities of an AI gateway
 without requiring you to deploy one. It runs inside your application process,
@@ -30,7 +30,7 @@ process.
                                  DeepSeek, Ollama, …)
 ```
 
-**Status:** v0.1.0, initial release. Both TypeScript (`@ai-router-sdk/core`) and Python (`ai-router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
+**Status:** v0.1.0, initial release. TypeScript (`@ai-router-sdk/core`), Python (`ai-router`), and Dart (`ai_router`) SDKs are feature-complete with 1:1 behavioral parity, covered by extensive mock-based unit test suites and 100% pass on shared cross-SDK conformance fixtures.
 
 ## What you get
 
@@ -608,8 +608,9 @@ application-recorded quality as adaptive signals.
   structured output, reasoning surfaces, `raw()` escape hatch
 - `@ai-router-sdk/redis` shared rate-limit store & state store
 - Python SDK (`ai-router`) with full sync & async APIs and 1:1 parity with TypeScript
+- Dart SDK (`ai_router`) with strict null-safety and 1:1 parity with TypeScript
 - Cross-SDK conformance fixture suite (request/response/chunk/SSE)
-- GitHub Actions CI matrix testing across Node.js (20, 22) and Python (3.10-3.13)
+- GitHub Actions CI matrix testing across Node.js (20, 22), Python (3.10-3.13), and Dart (3.0+)
 
 **Exploring**
 
@@ -628,7 +629,9 @@ pushing.
 Repository layout:
 
 ```
-packages/core/    @ai-router-sdk/core — the library
+packages/core/    @ai-router-sdk/core — the TypeScript library
+packages/python/  ai-router — the Python SDK
+packages/dart/    ai_router — the Dart SDK
 packages/redis/   @ai-router-sdk/redis — shared RateLimitStore
 apps/example/     Next.js chat demo (env-driven fallback chain)
 apps/docs/        Documentation site

@@ -7,6 +7,7 @@ Turborepo monorepo. npm workspaces.
 ```
 packages/core/   → @ai-router-sdk/core — the TypeScript library (zero runtime deps)
 packages/python/ → ai-router — the Python SDK (Python 3.10+, zero runtime deps)
+packages/dart/   → ai_router — the Dart SDK (Dart 3.0+, minimal deps)
 packages/redis/  → @ai-router-sdk/redis — Redis RateLimitStore adapter
 apps/example/    → Next.js chat UI (demo)
 apps/docs/       → Next.js docs site
@@ -34,10 +35,25 @@ npm run typecheck:python   # mypy strict, packages/python/src
 npm run smoke:python       # live API test — needs provider env vars
 ```
 
+### Dart SDK
+```bash
+npm run test:dart          # dart test, packages/dart/test
+npm run conformance:dart   # cross-SDK fixture tests (dart)
+npm run analyze:dart       # dart analyze, strict type checking
+```
+
 Run single package test: `npm test -w @ai-router-sdk/core`
 Run single file: `npx vitest run packages/core/tests/config.test.ts`
 
 Order matters: `build → typecheck` (turbo dep). Tests don't depend on build.
+
+## Dart SDK Guidelines
+
+- Dart SDK >=3.0.0 requirement
+- Strict analysis mode (`strict-casts`, `strict-inference`, `strict-raw-types`)
+- 100% pass on cross-SDK conformance fixtures (`packages/core/conformance/cases/*.json`)
+- Async streaming via standard Dart `Stream<ChatChunk>` and `Stream<String>`
+- Full support for multi-provider routing, fallbacks, retries, rate limiting, and guardrails
 
 ## Python SDK Guidelines
 

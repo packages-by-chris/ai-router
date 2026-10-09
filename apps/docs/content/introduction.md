@@ -40,7 +40,12 @@ pip install ai-router-sdk                # routing core
 pip install "ai-router-sdk[redis]"       # optional: shared Redis state store
 ```
 
-Zero mandatory runtime dependencies. Node 18+, Bun, Deno, edge runtimes, and Python 3.10+ are supported.
+### Dart & Flutter
+```sh
+dart pub add ai_router                   # or add ai_router to pubspec.yaml
+```
+
+Zero mandatory runtime dependencies. Node 18+, Bun, Deno, edge runtimes, Python 3.10+, and Dart 3.0+ / Flutter are supported.
 
 ## Quickstart
 
@@ -90,6 +95,28 @@ response = router.complete_sync({
 print(response.choices[0].message.content)
 ```
 
+### Dart
+```dart
+import 'package:ai_router/ai_router.dart';
+
+final router = AIRouter(
+  config: parseConfig({
+    'routes': [
+      {'id': 'fast', 'provider': 'openai', 'model': 'gpt-4o-mini', 'apiKey': '${OPENAI_API_KEY}'},
+      {'id': 'backup', 'provider': 'anthropic', 'model': 'claude-3-5-haiku-20241022', 'apiKey': '${ANTHROPIC_API_KEY}'},
+    ],
+  }),
+);
+
+final response = await router.complete(
+  const ChatRequest(
+    model: 'fast',
+    messages: [ChatMessage(role: Roles.user, content: 'hi')],
+  ),
+);
+print(response.choices.first.message.content);
+```
+
 `model` in requests is a **route id** from your config — not a provider model
 name. That indirection is what makes fallback possible.
 
@@ -98,4 +125,5 @@ name. That indirection is what makes fallback possible.
 - [Configuration](/docs/configuration) — the full config schema and validation rules
 - [Routing & fallback](/docs/routing) — retries, key rotation, and the recovery layers
 - [Python SDK](/docs/python) — sync & async Python API reference
+- [Dart SDK](/docs/dart) — Dart & Flutter SDK reference
 - [Examples](/docs/examples) — copy-paste recipes for common setups
